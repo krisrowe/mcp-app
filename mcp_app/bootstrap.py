@@ -65,7 +65,7 @@ def _discover_tools(module_path: str) -> list:
 def build_mcp(config: dict) -> FastMCP:
     """Create FastMCP instance and register discovered tools."""
     name = config.get("name", "mcp-app")
-    mcp = FastMCP(name, stateless_http=True, json_response=True)
+    mcp = FastMCP(name, stateless_http=True, json_response=True, streamable_http_path="/")
     mcp.settings.transport_security.enable_dns_rebinding_protection = False
 
     tools_module = config.get("tools")
