@@ -68,6 +68,60 @@ No dot = built-in alias. Dot = Python module path, dynamically imported.
 
 Middleware is an array — order matters (first = outermost). Omit entirely for no auth.
 
+### Two App Patterns
+
+Data-owning apps and API-proxy apps use nearly identical setup. The only difference is one line in `mcp-app.yaml`:
+
+**Data-owning app** (owns user data — food logs, notes, etc.):
+
+```yaml
+# mcp-app.yaml
+name: my-data-app
+store: filesystem
+middleware:
+  - user-identity
+tools: my_data_app.mcp.tools
+```
+
+```python
+# my_data_app/mcp/tools.py
+from my_data_app.sdk.core import MySDK
+
+sdk = MySDK()
+
+async def save_entry(data: dict) -> dict:
+    """Save a data entry for the current user."""
+    return sdk.save(data)  # SDK reads current_user_id internally
+```
+
+The `user-identity` middleware validates the JWT, extracts the user's email from the `sub` claim, and sets the `current_user_id` ContextVar. The SDK reads it to scope data per user. The request passes through unchanged.
+
+**API-proxy app** (wraps an external API — financial data, task management, etc.):
+
+```yaml
+# mcp-app.yaml
+name: my-api-proxy
+store: filesystem
+middleware:
+  - credential-proxy
+tools: my_api_proxy.mcp.tools
+```
+
+```python
+# my_api_proxy/mcp/tools.py
+from my_api_proxy.sdk.core import MySDK
+
+sdk = MySDK()
+
+async def list_items() -> dict:
+    """List items from the external API."""
+    return sdk.list_items()  # SDK reads Authorization header (backend token)
+```
+
+The `credential-proxy` middleware validates the JWT, looks up the stored backend credential for that user, and rewrites the `Authorization` header with the backend token. The SDK receives a valid backend API token — it doesn't know about JWTs or user management.
+
+**What's identical:** store setup, admin endpoints, tool discovery, `mcp-app.yaml` structure, `gapp.yaml`, deployment. Only the middleware choice differs.
+
 ### Tool Discovery
 
 The `tools` module is imported and all public async functions (not starting with `_`) are registered as MCP tools. Function names become tool names. Docstrings become descriptions. Type hints become schemas.
