@@ -1,0 +1,165 @@
+# Fleet Management
+
+mcp-app evolves from a framework for building individual MCP servers into the full lifecycle tool: build, deploy, manage, and fleet-track mcp-app services across any cloud or local environment.
+
+## Three Layers, Three Owners
+
+| Layer | Where it lives | Who owns it |
+|-------|---------------|-------------|
+| **App definition** | `mcp-app.yaml` in solution repo | Solution author |
+| **Fleet manifest** | `fleet.yaml` in operator's fleet repo | Operator |
+| **Deploy provider** | pip-installable package | Anyone |
+
+## Solution Repo — Unchanged
+
+A solution repo contains only the app definition. No deploy config, no provider references, no coupling to any cloud:
+
+```yaml
+# mcp-app.yaml
+name: echofit
+tools: echofit.mcp.tools
+store: filesystem
+middleware:
+  - user-identity
+```
+
+## Fleet Repo — Operator-Scoped Registry
+
+A git repo serving as a durable, portable registry of what's deployed and where. Like the Claude Code plugin marketplace pattern — a git repo as a registry.
+
+```yaml
+# fleet.yaml
+provider: cloudrun
+provider_config:
+  project: my-project
+  region: us-central1
+
+solutions:
+  echofit:
+    source: echomodel/echofit
+  monarch-mcp:
+    source: echomodel/monarch-access
+    provider_config:
+      region: us-east1              # per-solution override
+  third-party:
+    source: ghcr.io/someone/their-app:v2
+    managed: false                  # deploy only, no admin
+```
+
+**Source field supports three shapes:**
+- `owner/repo` — GitHub repo, mcp-app clones and builds
+- `registry.io/image:tag` — pre-built container image, deploy directly
+- `./local-path` — relative to fleet repo or absolute, for dev/testing
+
+**Provider config** has defaults at the top level, overridable per-solution.
+
+**`managed: false`** marks solutions that aren't mcp-app services (no `/admin`, no `/health`). Deploy and track only.
+
+## Deploy Providers — pip Packages, Entry Point Discovery
+
+A provider is a pip-installable package that implements the deploy interface. It declares itself via Python entry points — a standard plugin discovery mechanism used by pytest, pip, Flask, and many other tools.
+
+### How entry points work
+
+Entry points are a **metadata registry**, not a module path. The group name
+`mcp_app.providers` is just a string label — like a key in a phone book. It
+looks like a Python module path but it isn't one. You could call it
+`"fleet-deploy-backends"` and it would work identically. The dotted name is
+convention to signal who owns the namespace.
+
+When a provider package is pip-installed, it registers a name under this group.
+When mcp-app needs a provider, it looks up the name in the registry. That's the
+entire mechanism — no hardcoded mappings, no imports by convention, no magic.
+
+A provider package declares itself in its own pyproject.toml:
+
+```toml
+# Provider's pyproject.toml
+[project.entry-points."mcp_app.providers"]
+cloudrun = "mcp_app_cloudrun:CloudRunProvider"
+```
+
+This says: "I'm registering the name `cloudrun` under the `mcp_app.providers`
+group. When someone asks for `cloudrun`, give them the `CloudRunProvider` class
+from the `mcp_app_cloudrun` module."
+
+mcp-app discovers providers at runtime:
+
+```python
+from importlib.metadata import entry_points
+providers = entry_points(group="mcp_app.providers")
+provider_cls = providers[name].load()  # name comes from fleet.yaml
+```
+
+The group name `mcp_app.providers` is the only thing hardcoded in mcp-app. Provider names (`cloudrun`, `hackerhost`, `local-docker`) come from fleet.yaml at runtime. mcp-app never references any specific provider in its code. If a provider isn't installed, mcp-app errors: "no provider named X — pip install one that provides it."
+
+### Provider interface
+
+```python
+class DeployProvider:
+    def deploy(self, image: str, name: str, config: dict) -> str:
+        """Deploy an image. Returns the service URL."""
+        ...
+
+    def status(self, name: str, config: dict) -> dict:
+        """Return current status: {url, status}."""
+        ...
+
+    def resolve_signing_key(self, name: str, config: dict) -> str:
+        """Retrieve the signing key from the provider's secret store."""
+        ...
+```
+
+### Who publishes providers?
+
+Three scenarios, all identical to mcp-app:
+
+1. **Framework author** (echomodel) publishes `mcp-app-cloudrun` because Cloud Run is the primary target
+2. **Community developer** publishes `mcp-app-hackerhost` because they use both platforms and built a bridge
+3. **Cloud vendor** (HackerHost) publishes their own provider because mcp-app adoption makes native support worthwhile
+
+All three declare the same entry point. The operator `pip install`s whichever one and puts the name in fleet.yaml. mcp-app doesn't know or care who wrote it.
+
+## No Local Secrets
+
+Signing keys are generated at deploy time and stored in the provider's secret store (e.g., GCP Secret Manager). They never touch the operator's disk.
+
+When the operator runs admin commands, the provider resolves the signing key on demand using the operator's existing cloud auth (e.g., ADC via `gcloud auth application-default login`):
+
+```
+mcp-app users add --app echofit user@example.com
+  → reads fleet.yaml → echofit uses cloudrun provider
+  → provider fetches signing key from Secret Manager (via ADC)
+  → mcp-app mints admin JWT in memory
+  → calls /admin/users on the deployed URL
+  → key is garbage collected, never written to disk
+```
+
+## Lifecycle
+
+```bash
+# One-time setup
+gcloud auth application-default login
+pip install mcp-app-cloudrun
+mcp-app fleet add https://github.com/me/my-fleet.git
+
+# Ongoing
+mcp-app fleet list
+mcp-app fleet deploy echofit
+mcp-app fleet health
+mcp-app users add --app echofit user@example.com
+mcp-app tokens create --app echofit user@example.com
+```
+
+## The Sandwich
+
+```
+mcp-app build           ← mcp-app (knows the app structure)
+    ↓
+provider.deploy()       ← provider (cloud-specific)
+    ↓
+mcp-app health          ← mcp-app (knows the health endpoint)
+mcp-app users add       ← mcp-app (knows the admin API, provider resolves signing key)
+```
+
+mcp-app owns everything except the one cloud-specific step in the middle. That step is delegated to a pip-installable provider that anyone can publish.
