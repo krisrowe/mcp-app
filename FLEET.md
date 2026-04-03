@@ -7,7 +7,7 @@ mcp-app evolves from a framework for building individual MCP servers into the fu
 | Layer | Where it lives | Who owns it |
 |-------|---------------|-------------|
 | **App definition** | `mcp-app.yaml` in solution repo | Solution author |
-| **Fleet manifest** | `fleet.yaml` in operator's fleet repo | Operator |
+| **Fleet manifest** | `fleet.yaml` in a git repo | Operator |
 | **Deploy provider** | pip-installable package | Anyone |
 
 ## Solution Repo — Unchanged
@@ -23,11 +23,75 @@ middleware:
   - user-identity
 ```
 
-## Fleet Repo — Operator-Scoped Registry
+## Fleets
 
-A git repo serving as a durable, portable registry of what's deployed and where. Like the Claude Code plugin marketplace pattern — a git repo as a registry.
+A fleet is a git repo (or a directory within one) containing a `fleet.yaml`.
+Each fleet is self-contained — its own providers, its own solutions, its own
+config. No layering, no merging, no overrides between fleets.
 
-### Schema
+An operator registers fleets and switches between them:
+
+```bash
+mcp-app fleets register https://github.com/jim/infra.git --name work
+mcp-app fleets register https://github.com/jim/personal-fleet.git --name personal
+mcp-app fleets register ~/dotfiles/local-fleet --name local
+
+mcp-app fleets list
+#   * work      https://github.com/jim/infra.git
+#     personal  https://github.com/jim/personal-fleet.git
+#     local     ~/dotfiles/local-fleet
+
+mcp-app fleets use personal
+```
+
+The fleet repo can be a remote GitHub URL, a local git repo (e.g., in
+dotfiles), or a private repo — mcp-app doesn't care. If the fleet file
+isn't at the repo root, specify the path on registration:
+
+```bash
+mcp-app fleets register https://github.com/jim/infra.git --path ops/fleet.yaml --name work
+```
+
+All fleet commands operate on the active fleet implicitly. Override with
+`--fleet`:
+
+```bash
+mcp-app fleet list                    # uses active fleet
+mcp-app fleet list --fleet personal   # explicit
+```
+
+### What's stored locally
+
+Only the fleet registry — `~/.config/mcp-app/fleets.yaml`:
+
+```yaml
+active: work
+fleets:
+  work:
+    url: https://github.com/jim/infra.git
+    path: fleet.yaml
+  personal:
+    url: https://github.com/jim/personal-fleet.git
+  local:
+    url: ~/dotfiles/local-fleet
+```
+
+Everything else is in the fleet repos themselves.
+
+### Why separate fleets instead of local overrides?
+
+An earlier design used a gitignored `.fleet.local.yaml` that extended the
+shared fleet manifest with local-only solutions. This was rejected because
+any mechanism that layers config on top of shared state risks silently
+mutating it — even "additive" property changes on existing objects can be
+destructive (e.g., changing a provider region, adding a config field that
+alters behavior, overriding a secret reference).
+
+Separate fleets eliminate this entirely. Each fleet is its own world. Want
+local docker instances? Put them in a `local` fleet. Want shared Cloud Run
+services? They're in `work`. They never mix, never merge, never conflict.
+
+## Fleet Schema
 
 ```yaml
 # fleet.yaml
@@ -230,7 +294,8 @@ to authenticate.
 # One-time setup
 gcloud auth application-default login
 pip install mcp-app mcp-app-cloudrun
-mcp-app fleet add https://github.com/me/my-fleet.git
+mcp-app fleets register https://github.com/me/my-fleet.git --name work
+mcp-app fleets use work
 
 # Ongoing
 mcp-app fleet list
@@ -256,7 +321,8 @@ mcp-app owns everything except the one cloud-specific step in the middle. That s
 ## Ecosystem Example
 
 Jim runs a small company. He uses mcp-app services from multiple sources,
-deployed across different platforms. Here's his full setup.
+deployed across different platforms. He has three fleets: a shared team fleet,
+a personal fleet, and a local dev fleet.
 
 ### Jim's solution repos
 
@@ -275,10 +341,10 @@ He also uses `echomodel/echofit` (open source), a commercial MCP service from
 Acme Corp that publishes a pre-built image (built with mcp-app), and a partner
 service that doesn't use mcp-app at all.
 
-### Jim's fleet repo
+### Jim's work fleet (shared with team)
 
 ```yaml
-# jim/my-fleet/fleet.yaml
+# jim/infra/fleet.yaml
 
 providers:
   cloudrun:
@@ -291,48 +357,63 @@ providers:
     config:
       team: jim-team
       tier: starter                   # cheap scaled-down infra
-  local-docker:
-    package: mcp-app-local-docker
 
 defaults:
   deploy: cloudrun
   runtime: mcp-app
 
 solutions:
-
-  # Jim's own app — GitHub repo, build from source
   sales-tools:
     source: jim/sales-tools
-
-  # Open source app — different org, same defaults
   echofit:
     source: echomodel/echofit
-
-  # Commercial app — pre-built image, built with mcp-app
-  # (runtime: mcp-app inherited — admin tools work because Acme used the framework)
   acme-crm:
     source: ghcr.io/acmecorp/crm-mcp:v3.1
-
-  # Jim's experimental app — different deploy provider, same runtime
   experiments:
     source: jim/mcp-experiments
     deploy: hackerhost
-
-  # Partner service — not built with mcp-app, deploy and track only
   partner-api:
     source: ghcr.io/partner/their-service:latest
     runtime: none
 ```
 
-Five shared solutions. Three source types (GitHub repos, container images, local path).
-Two deploy providers (Cloud Run, HackerHost). Two runtime modes (mcp-app, none).
-One fleet manifest. Jim also has a `.fleet.local.yaml` with a local-docker dev
-instance that only he sees.
-
-### Jim's CI — Option A: handles provider install himself
+### Jim's local fleet (his machine only)
 
 ```yaml
-# jim/my-fleet/.github/workflows/deploy.yml
+# ~/dotfiles/local-fleet/fleet.yaml
+
+providers:
+  local-docker:
+    package: mcp-app-local-docker
+
+defaults:
+  deploy: local-docker
+  runtime: mcp-app
+
+solutions:
+  sales-tools-dev:
+    source: ~/ws/sales-tools
+  echofit-dev:
+    source: ~/ws/echofit
+```
+
+### Fleet registration
+
+```bash
+mcp-app fleets register https://github.com/jim/infra.git --name work
+mcp-app fleets register ~/dotfiles/local-fleet --name local
+
+mcp-app fleets list
+#   * work   https://github.com/jim/infra.git
+#     local  ~/dotfiles/local-fleet
+```
+
+### Jim's CI for the work fleet
+
+**Option A: handles provider install himself**
+
+```yaml
+# jim/infra/.github/workflows/deploy.yml
 name: Deploy fleet
 on:
   push:
@@ -350,10 +431,10 @@ jobs:
       - run: mcp-app fleet deploy --all
 ```
 
-### Jim's CI — Option B: uses echomodel's reusable workflow
+**Option B: uses echomodel's reusable workflow**
 
 ```yaml
-# jim/my-fleet/.github/workflows/deploy.yml
+# jim/infra/.github/workflows/deploy.yml
 name: Deploy fleet
 on:
   push:
@@ -366,13 +447,13 @@ jobs:
       providers: mcp-app-cloudrun mcp-app-hackerhost
 ```
 
-### Jim's CI — Option C: fleet.yaml declares provider packages
+**Option C: fleet.yaml declares provider packages**
 
 The `package` field in each provider entry tells mcp-app what to install.
 CI only needs to install mcp-app itself:
 
 ```yaml
-# jim/my-fleet/.github/workflows/deploy.yml
+# jim/infra/.github/workflows/deploy.yml
 name: Deploy fleet
 on:
   push:
@@ -394,36 +475,35 @@ jobs:
 ### Jim's day-to-day
 
 ```bash
-# See everything
+# Work fleet
+mcp-app fleets use work
 mcp-app fleet list
-#   sales-tools      cloudrun     https://sales-xxx.a.run.app      healthy
-#   echofit          cloudrun     https://echofit-xxx.a.run.app     healthy
-#   acme-crm         cloudrun     https://acme-xxx.a.run.app        healthy
-#   experiments      hackerhost   https://exp.hackerhost.app         healthy
-#   partner-api      cloudrun     https://partner.example.com        (unmanaged)
-#   sales-tools-dev  local-docker http://localhost:9090              healthy  (local)
+#   sales-tools   cloudrun     https://sales-xxx.a.run.app      healthy
+#   echofit       cloudrun     https://echofit-xxx.a.run.app     healthy
+#   acme-crm      cloudrun     https://acme-xxx.a.run.app        healthy
+#   experiments   hackerhost   https://exp.hackerhost.app         healthy
+#   partner-api   cloudrun     https://partner.example.com        (unmanaged)
+
+# Switch to local dev
+mcp-app fleets use local
+mcp-app fleet list
+#   sales-tools-dev  local-docker  http://localhost:8080   healthy
+#   echofit-dev      local-docker  http://localhost:8081   healthy
 
 # JSON output includes full metadata:
 # mcp-app fleet list --format=json
 # [
-#   {"name": "echofit", "deploy": "cloudrun", "runtime": "mcp-app",
-#    "url": "https://echofit-xxx.a.run.app", "status": "healthy",
-#    "scope": "fleet", "source": "echomodel/echofit"},
-#   {"name": "sales-tools-dev", "deploy": "local-docker", "runtime": "mcp-app",
-#    "url": "http://localhost:9090", "status": "healthy",
-#    "scope": "local", "source": "./sales-tools-local"},
+#   {"name": "echofit-dev", "deploy": "local-docker", "runtime": "mcp-app",
+#    "url": "http://localhost:8081", "status": "healthy",
+#    "source": "~/ws/echofit"},
 #   ...
 # ]
 
 # Deploy one app
-mcp-app fleet deploy echofit
+mcp-app fleet deploy echofit-dev
 
-# Health check managed services
-mcp-app fleet health
-
-# Manage users — provider resolves signing key, no secrets on disk
-mcp-app users add --app sales-tools user@example.com
-mcp-app users add --app echofit user@example.com
+# Manage users — same commands regardless of fleet
+mcp-app users add --app echofit-dev user@example.com
 ```
 
 ### What each person touches
@@ -432,41 +512,11 @@ mcp-app users add --app echofit user@example.com
 |--------|------------------|-------------------|
 | **Solution author** (echomodel, Jim, Acme) | `mcp-app.yaml` in their repo, or a container image | Nothing deployment-related |
 | **Provider author** (echomodel, Bob, HackerHost) | pip package with entry point | Nothing fleet-related |
-| **Operator** (Jim) | fleet.yaml + CI workflow | Provider config, solution list |
+| **Operator** (Jim) | fleet.yaml per fleet + CI workflow | Provider config, solution list |
 
-No one touches anyone else's stuff. Solution authors don't know about Jim's fleet.
-Provider authors don't know about Jim's solutions. Jim's fleet.yaml is the only
-place all three meet.
-
-## Local Overrides
-
-Fleet.yaml is shared — committed, versioned, same for the whole team. But
-individual operators may want local dev instances, personal provider overrides,
-or experimental solutions that don't belong in the shared manifest.
-
-A `.fleet.local.yaml` in the fleet repo (gitignored) merges on top of
-fleet.yaml at runtime:
-
-```yaml
-# .fleet.local.yaml (gitignored — never committed)
-providers:
-  local-docker:
-    package: mcp-app-local-docker
-
-solutions:
-  sales-tools-dev:
-    source: ./sales-tools-local
-    deploy: local-docker
-  echofit:
-    deploy: local-docker              # override shared solution to run locally
-```
-
-- Local-only solutions appear in `mcp-app fleet list` for that operator only
-- Shared solutions can be overridden (e.g., run echofit locally instead of on Cloud Run)
-- Other team members never see it
-- Same pattern as `.env.local`, `docker-compose.override.yml`
-
-The fleet repo's `.gitignore` includes `.fleet.local.yaml` by default.
+No one touches anyone else's stuff. Solution authors don't know about Jim's
+fleets. Provider authors don't know about Jim's solutions. Each fleet.yaml is
+the single place where providers and solutions meet.
 
 ## Design FAQ
 
@@ -511,3 +561,17 @@ deployment details. Separating the axes means each can evolve independently.
 Today `runtime` is either `mcp-app` or `none`. If mcp-app adds features later
 (metrics, log aggregation, config push), every `runtime: mcp-app` solution
 gets them automatically — no new flags needed.
+
+### Why separate fleets instead of local override files?
+
+An earlier design used a gitignored `.fleet.local.yaml` that extended the
+shared fleet manifest with local-only solutions. This was rejected because
+any mechanism that layers config on top of shared state risks mutating it —
+even "additive" changes to existing objects can be destructive (e.g., changing
+a region, adding a config field that alters provider behavior, overriding a
+secret reference).
+
+Separate fleets eliminate this entirely. Each fleet is its own world. Want
+local docker instances? Put them in a `local` fleet. Want shared Cloud Run
+services? They're in `work`. They never mix, never merge, never conflict.
+Switch between them with `mcp-app fleets use`.
