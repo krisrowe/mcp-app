@@ -115,6 +115,24 @@ def build_asgi(config: dict, mcp: FastMCP, store) -> Starlette:
     )
 
 
+def build_stdio(config_path: Path | None = None):
+    """Build for stdio transport: tools + store, no middleware/admin/ASGI."""
+    config = load_config(config_path)
+    store = build_store(config)
+
+    name = config.get("name", "mcp-app")
+    mcp = FastMCP(name)
+
+    tools_module = config.get("tools")
+    if not tools_module:
+        raise ValueError("mcp-app.yaml must specify 'tools' module path")
+
+    for func in _discover_tools(tools_module):
+        mcp.tool()(func)
+
+    return mcp, store, config
+
+
 def build_app(config_path: Path | None = None):
     """One-shot: load config, build everything, return ASGI app + mcp + store."""
     config = load_config(config_path)

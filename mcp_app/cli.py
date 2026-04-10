@@ -85,6 +85,57 @@ def serve(app_path, host, port):
     uvicorn.run(app, host=host, port=port)
 
 
+@main.command()
+@click.argument("app_path", required=False, default=None)
+def stdio(app_path):
+    """Run MCP server over stdio (local, single user).
+
+    APP_PATH: Optional path to the directory containing mcp-app.yaml.
+    Defaults to the current working directory.
+
+    Reads mcp-app.yaml, discovers tools, wires the store, and runs
+    FastMCP over stdin/stdout. No middleware, no admin endpoints.
+    """
+    from mcp_app.bootstrap import build_stdio
+    from mcp_app.context import current_user_id
+
+    config_path = Path(app_path) / "mcp-app.yaml" if app_path else None
+    mcp, store, config = build_stdio(config_path)
+
+    import mcp_app
+    mcp_app._store = store
+
+    # Set stdio identity from config, or default to "local"
+    stdio_config = config.get("stdio", {})
+    identity = stdio_config.get("identity", {})
+    provider = identity.get("provider", "static")
+
+    if provider == "static":
+        user = identity.get("user", "local")
+        current_user_id.set(user)
+    elif provider == "env":
+        var = identity.get("var")
+        if not var:
+            raise click.ClickException("stdio.identity.provider 'env' requires 'var' field")
+        user = os.environ.get(var)
+        if not user:
+            raise click.ClickException(f"Environment variable {var} not set")
+        current_user_id.set(user)
+    else:
+        # Module path — resolve and call
+        try:
+            module_path, func_name = provider.rsplit(":", 1)
+            import importlib
+            module = importlib.import_module(module_path)
+            resolve_fn = getattr(module, func_name)
+            user = resolve_fn()
+            current_user_id.set(user)
+        except Exception as e:
+            raise click.ClickException(f"Failed to resolve stdio identity from '{provider}': {e}")
+
+    mcp.run(transport="stdio")
+
+
 @main.command("set-base-url")
 @click.argument("url")
 @click.option("--signing-key", default=None, help="Signing key for admin auth.")
