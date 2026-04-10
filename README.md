@@ -63,7 +63,8 @@ No dot = built-in alias. Dot = Python module path, dynamically imported.
 | Value | Description |
 |-------|-------------|
 | `user-identity` | Validates JWT, extracts `sub` claim, sets `current_user_id` ContextVar. For data-owning apps. |
-| `credential-proxy` | Validates JWT, swaps for stored backend credential, rewrites Authorization header. For API-proxy apps. (Future) |
+| `bearer-proxy` | Validates JWT, swaps for stored backend token (PAT, API key), rewrites Authorization header. For API-proxy apps. (Planned — [#8](https://github.com/echomodel/mcp-app/issues/8)) |
+| `google-oauth2-proxy` | Like bearer-proxy but refreshes expired Google OAuth2 access tokens. For apps wrapping Google APIs. (Planned — [#8](https://github.com/echomodel/mcp-app/issues/8)) |
 | `my.module.MyMiddleware` | Custom. ASGI middleware class with signature `__init__(self, app, verifier, store=None)` |
 
 Middleware is an array — order matters (first = outermost). Omit entirely for no auth.
@@ -99,12 +100,21 @@ The `user-identity` middleware validates the JWT, extracts the user's email from
 **API-proxy app** (wraps an external API — financial data, task management, etc.):
 
 ```yaml
-# mcp-app.yaml
+# mcp-app.yaml — static tokens (PATs, API keys)
 name: my-api-proxy
 store: filesystem
 middleware:
-  - credential-proxy
+  - bearer-proxy
 tools: my_api_proxy.mcp.tools
+```
+
+```yaml
+# mcp-app.yaml — Google APIs (OAuth2 with token refresh)
+name: my-google-proxy
+store: filesystem
+middleware:
+  - google-oauth2-proxy
+tools: my_google_proxy.mcp.tools
 ```
 
 ```python
@@ -118,9 +128,11 @@ async def list_items() -> dict:
     return sdk.list_items()  # SDK reads Authorization header (backend token)
 ```
 
-The `credential-proxy` middleware validates the JWT, looks up the stored backend credential for that user, and rewrites the `Authorization` header with the backend token. The SDK receives a valid backend API token — it doesn't know about JWTs or user management.
+The proxy middleware validates the JWT, looks up the stored backend credential for that user, resolves an access token (passthrough for bearer, refresh for Google OAuth2), and rewrites the `Authorization` header. The SDK receives a valid backend API token — it doesn't know about JWTs or user management.
 
-**What's identical:** store setup, admin endpoints, tool discovery, `mcp-app.yaml` structure, `gapp.yaml`, deployment. Only the middleware choice differs.
+Note: `bearer-proxy` and `google-oauth2-proxy` are planned — see [#8](https://github.com/echomodel/mcp-app/issues/8). Custom middleware via module path works today for API-proxy apps.
+
+**What's identical:** store setup, admin endpoints, tool discovery, `mcp-app.yaml` structure, deployment. Only the middleware choice differs.
 
 ### Tool Discovery
 
@@ -192,12 +204,31 @@ Set environment variables for `SIGNING_KEY` and `APP_USERS_PATH`.
 
 ### MCP Client Configuration
 
-**Claude.ai:**
-```
-https://your-service.run.app/?token=YOUR_TOKEN
+#### CLI-based registration
+
+**Claude Code (stdio — local):**
+```bash
+claude mcp add my-app -- mcp-app stdio
 ```
 
+**Claude Code (HTTP — remote):**
+```bash
+claude mcp add --transport http my-app \
+  https://your-service.run.app/ \
+  --header "Authorization: Bearer YOUR_TOKEN"
+```
+
+**Gemini CLI (stdio — local):**
+```bash
+gemini mcp add my-app -- mcp-app stdio
+```
+
+#### Manual configuration (JSON)
+
 **Claude Code / Gemini CLI (remote):**
+
+Add to `~/.claude.json` or `~/.gemini/settings.json`:
+
 ```json
 {
   "mcpServers": {
@@ -210,6 +241,20 @@ https://your-service.run.app/?token=YOUR_TOKEN
   }
 }
 ```
+
+**Claude.ai / Claude mobile / Claude Code (remote via URL):**
+```
+https://your-service.run.app/?token=YOUR_TOKEN
+```
+
+Remote MCP servers added through Claude.ai are available across all
+Claude clients — web, mobile app, and Claude Code — without separate
+configuration for each.
+
+Note: Claude Code does not currently support env var interpolation in
+HTTP headers. Tokens are stored in cleartext in the local config. For
+stdio servers, use `-e KEY=value` to pass secrets as environment
+variables.
 
 ## Architecture
 

@@ -14,6 +14,9 @@ venv/
 # Testing
 .pytest_cache/
 
+# Claude Code
+.claude/
+
 # Gemini (except settings.json)
 .gemini/*
 !.gemini/settings.json
