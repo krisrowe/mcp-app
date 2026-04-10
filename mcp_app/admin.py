@@ -41,14 +41,13 @@ def get_default_token_duration() -> int:
         )
 
 
-def create_admin_app(store: UserAuthStore, data_store=None) -> Starlette:
+def create_admin_app(store: UserAuthStore) -> Starlette:
     """Create a Starlette app with admin REST endpoints.
 
     Args:
-        store: Auth store for user registration and verification.
-        data_store: Optional data store for saving backend credentials
-            (used by credential proxy middleware). If provided, POST
-            /admin/users accepts an optional 'credential' field.
+        store: Auth store for user registration, verification, and
+            profile storage. POST /admin/users accepts an optional
+            'profile' field saved alongside the auth record.
     """
 
     signing_key = os.environ.get("SIGNING_KEY")
@@ -104,18 +103,14 @@ def create_admin_app(store: UserAuthStore, data_store=None) -> Starlette:
 
         existing = await store.get(email)
         if not existing:
-            await store.save(UserAuthRecord(
-                email=email,
-                created=datetime.now(timezone.utc),
-            ))
-
-        # Save backend credential if provided (for credential proxy apps)
-        credential = body.get("credential")
-        if credential is not None and data_store is not None:
-            # If credential is a plain string, wrap it for bearer-proxy
-            if isinstance(credential, str):
-                credential = {"token": credential}
-            data_store.save(email, "credential", credential)
+            profile = body.get("profile")
+            await store.save(
+                UserAuthRecord(
+                    email=email,
+                    created=datetime.now(timezone.utc),
+                ),
+                profile=profile,
+            )
 
         return JSONResponse(_issue_token(email, duration))
 

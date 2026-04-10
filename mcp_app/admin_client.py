@@ -53,8 +53,9 @@ class AdminClient:
 
         Args:
             email: User's email address.
-            credential: Optional backend credential for API-proxy apps.
-                String (bearer token) or dict (OAuth2 credentials).
+            credential: Optional data saved under the user's "credential"
+                key in the data store. mcp-app does not interpret it —
+                the SDK decides what it means.
         """
         body = {"email": email}
         if credential is not None:

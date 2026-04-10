@@ -1,15 +1,19 @@
-"""JWT middleware for data-owning apps (user-identity)."""
+"""JWT identity middleware — validates tokens, verifier sets current_user."""
 
-from mcp_app.context import current_user_id
-from mcp_app.middleware.common import extract_token, send_error
+import json
+from urllib.parse import parse_qs
+
 from mcp_app.verifier import JWTVerifier
 
 
 class JWTMiddleware:
     """Validates JWT from Authorization header or ?token= query param.
 
-    Sets current_user_id ContextVar on success. Rejects with 401/403
-    on failure. Passes through /health without auth.
+    The verifier handles user record loading and setting the
+    current_user ContextVar. This middleware just extracts the token
+    and delegates to the verifier.
+
+    Rejects with 401/403 on failure. Passes through /health.
     """
 
     def __init__(self, app, verifier: JWTVerifier, store=None):
@@ -24,16 +28,46 @@ class JWTMiddleware:
         if path == "/health":
             return await self.app(scope, receive, send)
 
-        token = extract_token(scope)
+        token = _extract_token(scope)
         if not token:
-            return await send_error(send, 401, "Missing authentication token")
+            return await _send_error(send, 401, "Missing authentication token")
 
         access = await self.verifier.verify_token(token)
         if not access:
-            return await send_error(send, 403, "Invalid or revoked token")
+            return await _send_error(send, 403, "Invalid or revoked token")
 
-        tok = current_user_id.set(access.client_id)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            current_user_id.reset(tok)
+        await self.app(scope, receive, send)
+
+
+def _extract_token(scope: dict) -> str | None:
+    """Extract JWT from Authorization header or ?token= query param."""
+    headers = dict(scope.get("headers", []))
+    auth = headers.get(b"authorization", b"").decode()
+    if auth.startswith("Bearer "):
+        return auth[7:]
+
+    query_string = scope.get("query_string", b"").decode()
+    if query_string:
+        params = parse_qs(query_string)
+        tokens = params.get("token", [])
+        if tokens:
+            return tokens[0]
+
+    return None
+
+
+async def _send_error(send, status: int, message: str) -> None:
+    """Send a JSON error response."""
+    body = json.dumps({"error": message}).encode()
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": body,
+    })

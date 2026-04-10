@@ -1,11 +1,12 @@
-"""JWT verification using the UserAuthStore for user lookup and revocation."""
+"""JWT verification — validates tokens, loads user record, sets context."""
 
 import os
 from dataclasses import dataclass
 
 import jwt as pyjwt
 
-from mcp_app.store import UserAuthStore
+from mcp_app.context import current_user, hydrate_profile
+from mcp_app.models import UserRecord
 
 
 @dataclass
@@ -17,15 +18,17 @@ class VerifiedToken:
 
 
 class JWTVerifier:
-    """Validates JWTs and checks revocation against a UserAuthStore.
+    """Validates JWTs, loads user record, sets current_user ContextVar.
+
+    One store read per request — loads auth + profile together.
 
     Reads configuration from environment variables:
         SIGNING_KEY: JWT signing key (required). No default — must be set.
         JWT_AUD: Expected audience claim. If unset, audience is not checked.
     """
 
-    def __init__(self, store: UserAuthStore):
-        self.store = store
+    def __init__(self, auth_store):
+        self.auth_store = auth_store
         self.signing_key = os.environ.get("SIGNING_KEY")
         if not self.signing_key:
             raise RuntimeError(
@@ -50,12 +53,19 @@ class JWTVerifier:
         if not email:
             return None
 
-        user = await self.store.get(email)
-        if not user:
+        # Load full user record — one store read
+        user_record = await self.auth_store.get_full(email)
+        if not user_record:
             return None
 
-        if user.revoke_after and claims.get("iat", 0) < user.revoke_after:
+        if user_record.revoke_after and claims.get("iat", 0) < user_record.revoke_after:
             return None
+
+        # Hydrate profile with registered Pydantic model if available
+        user_record.profile = hydrate_profile(user_record.profile)
+
+        # Set current_user ContextVar — available to all tool functions
+        current_user.set(user_record)
 
         return VerifiedToken(
             client_id=email,

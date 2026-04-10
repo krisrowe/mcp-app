@@ -11,7 +11,7 @@ from mcp_app.verifier import JWTVerifier
 from mcp_app.bridge import DataStoreAuthAdapter
 from mcp_app.data_store import FileSystemUserDataStore
 from mcp_app.models import UserAuthRecord
-from mcp_app.context import current_user_id
+from mcp_app.context import current_user
 
 
 SIGNING_KEY = "test-key-for-unit-tests-32chars!!"
@@ -83,8 +83,9 @@ async def _call_middleware(middleware, token=None, path="/", method="POST", quer
 
 
 async def _passthrough_app(scope, receive, send):
-    """Simple ASGI app that returns 200."""
-    body = json.dumps({"user": current_user_id.get()}).encode()
+    """Simple ASGI app that returns 200 with user info."""
+    user = current_user.get()
+    body = json.dumps({"user": user.email}).encode()
     await send({"type": "http.response.start", "status": 200,
                 "headers": [(b"content-type", b"application/json")]})
     await send({"type": "http.response.body", "body": body})
@@ -92,7 +93,6 @@ async def _passthrough_app(scope, receive, send):
 
 @pytest.mark.asyncio
 async def test_valid_token(store, auth_store, verifier):
-    # Register user
     await auth_store.save(UserAuthRecord(email="alice@test.com", created=datetime.now(timezone.utc)))
 
     middleware = JWTMiddleware(_passthrough_app, verifier)
@@ -138,9 +138,6 @@ async def test_revoked_user(store, auth_store, verifier):
 
     middleware = JWTMiddleware(_passthrough_app, verifier)
     token = _make_token("bob@test.com")
-    # Token iat is now, revoke_after is 10 seconds ago — but iat > revoke_after should pass
-    # Actually revoke_after means tokens issued BEFORE this time are revoked
-    # Token issued now (after revoke_after) should be valid
     resp = await _call_middleware(middleware, token=token)
     assert resp["status"] == 200
 
@@ -176,3 +173,32 @@ async def test_query_param_token(store, auth_store, verifier):
     token = _make_token("alice@test.com")
     resp = await _call_middleware(middleware, query_token=token)
     assert resp["status"] == 200
+
+
+@pytest.mark.asyncio
+async def test_profile_on_current_user(store, auth_store, verifier):
+    """Profile data saved at registration is available on current_user."""
+    await auth_store.save(
+        UserAuthRecord(email="alice@test.com", created=datetime.now(timezone.utc)),
+        profile={"token": "monarch-pat-xxx"},
+    )
+
+    async def _check_profile_app(scope, receive, send):
+        user = current_user.get()
+        body = json.dumps({
+            "user": user.email,
+            "has_profile": user.profile is not None,
+            "token": user.profile.get("token") if user.profile else None,
+        }).encode()
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": body})
+
+    middleware = JWTMiddleware(_check_profile_app, verifier)
+    token = _make_token("alice@test.com")
+    resp = await _call_middleware(middleware, token=token)
+    assert resp["status"] == 200
+    body = json.loads(resp["body"])
+    assert body["user"] == "alice@test.com"
+    assert body["has_profile"] is True
+    assert body["token"] == "monarch-pat-xxx"

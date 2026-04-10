@@ -97,7 +97,8 @@ def stdio(app_path):
     FastMCP over stdin/stdout. No middleware, no admin endpoints.
     """
     from mcp_app.bootstrap import build_stdio
-    from mcp_app.context import current_user_id
+    from mcp_app.context import current_user, hydrate_profile
+    from mcp_app.models import UserRecord
 
     config_path = Path(app_path) / "mcp-app.yaml" if app_path else None
     mcp, store, config = build_stdio(config_path)
@@ -107,13 +108,24 @@ def stdio(app_path):
 
     # Set stdio identity from config
     stdio_config = config.get("stdio", {})
-    user = stdio_config.get("user")
-    if not user:
+    user_id = stdio_config.get("user")
+    if not user_id:
         raise click.ClickException(
             "stdio.user not configured in mcp-app.yaml. "
             "Add:\n\n  stdio:\n    user: \"local\"\n"
         )
-    current_user_id.set(user)
+
+    # Load full user record from store (auth + profile in one read)
+    from mcp_app.bridge import DataStoreAuthAdapter
+    adapter = DataStoreAuthAdapter(store)
+    import asyncio
+    user_record = asyncio.run(adapter.get_full(user_id))
+    if user_record:
+        user_record.profile = hydrate_profile(user_record.profile)
+    else:
+        user_record = UserRecord(email=user_id)
+
+    current_user.set(user_record)
 
     mcp.run(transport="stdio")
 

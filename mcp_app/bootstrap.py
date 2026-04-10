@@ -1,6 +1,5 @@
 """Bootstrap — reads mcp-app.yaml, discovers tools, builds the app."""
 
-import asyncio
 import contextlib
 import functools
 import importlib
@@ -16,11 +15,7 @@ from starlette.routing import Mount
 from mcp_app.admin import create_admin_app
 from mcp_app.bridge import DataStoreAuthAdapter
 from mcp_app.data_store import FileSystemUserDataStore
-from mcp_app.middleware import (
-    JWTMiddleware,
-    BearerProxyMiddleware,
-    GoogleOAuth2ProxyMiddleware,
-)
+from mcp_app.middleware import JWTMiddleware
 from mcp_app.verifier import JWTVerifier
 
 
@@ -29,11 +24,9 @@ STORE_ALIASES = {
     "filesystem": FileSystemUserDataStore,
 }
 
-# Built-in middleware aliases
+# Built-in middleware aliases — for custom middleware via module path
 MIDDLEWARE_ALIASES = {
     "user-identity": JWTMiddleware,
-    "bearer-proxy": BearerProxyMiddleware,
-    "google-oauth2-proxy": GoogleOAuth2ProxyMiddleware,
 }
 
 
@@ -69,18 +62,18 @@ def _discover_tools(module_path: str) -> list:
 
 
 def _require_identity(func):
-    """Wrap a tool function to enforce that current_user_id is set."""
-    from mcp_app.context import current_user_id
+    """Wrap a tool function to enforce that current_user is set."""
+    from mcp_app.context import current_user
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         try:
-            current_user_id.get()
+            current_user.get()
         except LookupError:
             raise ValueError(
                 "No authenticated user identity established. "
-                "HTTP: configure middleware in mcp-app.yaml. "
-                "stdio: configure stdio.identity in mcp-app.yaml."
+                "HTTP: ensure SIGNING_KEY is set. "
+                "stdio: configure stdio.user in mcp-app.yaml."
             )
         return await func(*args, **kwargs)
     return wrapper
@@ -111,19 +104,37 @@ def build_store(config: dict):
 
 
 def build_asgi(config: dict, mcp: FastMCP, store) -> Starlette:
-    """Build the full ASGI app with middleware and admin."""
+    """Build the full ASGI app with identity middleware and admin.
+
+    Identity middleware (user-identity) always runs. Additional custom
+    middleware can be specified in mcp-app.yaml:
+
+        middleware:
+          - my_app.auth.CustomMiddleware
+
+    Set middleware to an empty list to disable all middleware (no auth).
+    Omit middleware entirely for the default (user-identity only).
+    """
     auth_store = DataStoreAuthAdapter(store)
     verifier = JWTVerifier(auth_store)
-    admin_app = create_admin_app(auth_store, data_store=store)
+    admin_app = create_admin_app(auth_store)
 
     inner = mcp.streamable_http_app()
 
-    # Stack middleware (first in list = outermost)
-    middleware_list = config.get("middleware", [])
-    wrapped = inner
-    for mw_value in reversed(middleware_list):
-        mw_cls = _resolve_class(mw_value, MIDDLEWARE_ALIASES)
-        wrapped = mw_cls(wrapped, verifier, store)
+    # Determine middleware stack
+    if "middleware" in config and config["middleware"] == []:
+        # Explicitly empty — no middleware (no auth)
+        wrapped = inner
+    elif "middleware" in config:
+        # Custom middleware specified — use as-is (user must include
+        # user-identity explicitly if they want it)
+        wrapped = inner
+        for mw_value in reversed(config["middleware"]):
+            mw_cls = _resolve_class(mw_value, MIDDLEWARE_ALIASES)
+            wrapped = mw_cls(wrapped, verifier, store)
+    else:
+        # Default — user-identity runs automatically
+        wrapped = JWTMiddleware(inner, verifier)
 
     @contextlib.asynccontextmanager
     async def lifespan(app):

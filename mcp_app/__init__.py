@@ -1,8 +1,8 @@
 """mcp-app: Config-driven MCP application framework."""
 
-from mcp_app.context import current_user_id
+from mcp_app.context import current_user, register_profile
 from mcp_app.data_store import UserDataStore, FileSystemUserDataStore
-from mcp_app.models import UserAuthRecord
+from mcp_app.models import UserAuthRecord, UserRecord
 from mcp_app.store import UserAuthStore
 
 # Set by CLI commands (stdio/serve) after building the app.
@@ -18,10 +18,12 @@ def get_store() -> UserDataStore:
 
 
 __all__ = [
-    "current_user_id",
+    "current_user",
+    "register_profile",
     "get_store",
     "FileSystemUserDataStore",
     "UserAuthRecord",
+    "UserRecord",
     "UserAuthStore",
     "UserDataStore",
 ]
