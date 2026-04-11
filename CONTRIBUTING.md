@@ -139,10 +139,9 @@ The full production stack:
 Local single-user mode:
 - FastMCP runs over stdin/stdout
 - No middleware, no admin endpoints, no ASGI layer
-- `current_user` loaded from store using `stdio.user` from yaml (or `--user` flag)
+- `current_user` loaded from store using `--user` flag
 - Store still wired — `get_store()` works the same way
 - Tool discovery identical to HTTP — same module, same functions
-- `--user` flag overrides yaml for multi-account support
 
 **Why mcp-app matters for stdio:** Without it, solutions that want stdio
 must use FastMCP directly with `@mcp.tool()` decorators and manual setup.
@@ -158,16 +157,17 @@ transports or uses the store/identity infrastructure.
 
 Identity in stdio mode is a simple string — there is no authentication.
 The MCP client launches the process directly; if you can run the command,
-you're in. The `stdio.user` config just tells the store which user bucket
-to read/write data from:
+you're in. The `--user` flag specifies which user record to load from
+the store:
 
-```yaml
-stdio:
-  user: "local"
+```bash
+mcp-app stdio --user local
+my-app-mcp stdio --user alice@example.com
 ```
 
-If `stdio.user` is not configured and `mcp-app stdio` is invoked,
-mcp-app refuses to start with a clear error. No silent defaults.
+`--user` is required. There is no yaml config for stdio identity —
+it's a runtime argument, not a versioned setting. `mcp-app stdio`
+refuses to start without it.
 
 ### Solution entry points
 

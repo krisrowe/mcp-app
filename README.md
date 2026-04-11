@@ -43,11 +43,12 @@ mcp-app serve   # HTTP, multi-user, production
 name: my-app                    # Required — MCP server name, data store path
 tools: my_app.mcp.tools         # Required — module path to discover tools from
 store: filesystem               # Optional — defaults to filesystem
-stdio:                          # Required for stdio mode
-  user: "local"                 #   identity for the local session
 ```
 
-Only `name` and `tools` are required. Identity middleware runs automatically in HTTP mode. Store defaults to filesystem.
+Only `name` and `tools` are required. Identity middleware runs
+automatically in HTTP mode. Store defaults to filesystem. stdio
+user identity is specified via the `--user` flag on the CLI, not
+in the yaml.
 
 ### Store
 
@@ -60,21 +61,12 @@ No dot = built-in alias. Dot = Python module path, dynamically imported.
 
 ### Middleware
 
-Identity middleware (`user-identity`) runs automatically in HTTP mode. It validates JWTs, loads the full user record from the store, and sets the `current_user` ContextVar. You don't need to configure it.
+Identity middleware runs automatically in HTTP mode. It validates
+JWTs, loads the full user record from the store, and sets the
+`current_user` ContextVar. No configuration needed.
 
-To add custom middleware or disable auth entirely:
-
-```yaml
-# Custom middleware (user-identity must be included explicitly)
-middleware:
-  - my_app.auth.RateLimiter
-  - user-identity
-
-# No auth (explicitly empty)
-middleware: []
-```
-
-Custom middleware must match the signature `__init__(self, app, verifier, store=None)`.
+See [docs/custom-middleware.md](docs/custom-middleware.md) for
+advanced middleware configuration.
 
 ### Two App Patterns
 
@@ -136,7 +128,7 @@ Every mcp-app solution has a `current_user` ContextVar set before tools execute.
 | Transport | How it's set |
 |-----------|-------------|
 | HTTP (`mcp-app serve`) | Identity middleware validates JWT, loads full user record from store |
-| stdio (`mcp-app stdio`) | CLI loads user record from store using `stdio.user` from yaml |
+| stdio (`mcp-app stdio`) | CLI loads user record from store using `--user` flag |
 
 The SDK reads it:
 
@@ -177,15 +169,17 @@ mcp-app users add alice@example.com
 mcp-app users add alice@example.com --profile '{"token": "api-key-xxx"}'
 ```
 
-### stdio configuration
+### stdio identity
 
-```yaml
-# mcp-app.yaml
-stdio:
-  user: "local"
+stdio user identity is always specified via the `--user` flag:
+
+```bash
+mcp-app stdio --user local
+my-app-mcp stdio --user alice@example.com
 ```
 
-`mcp-app stdio` loads the user record for `"local"` from the store and sets `current_user`. Refuses to start without `stdio.user` configured.
+The CLI loads the user record from the store and sets `current_user`.
+Refuses to start without `--user`.
 
 ## Admin Endpoints
 

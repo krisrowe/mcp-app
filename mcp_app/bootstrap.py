@@ -182,7 +182,7 @@ def run_stdio(config_path: Path | None = None, user: str | None = None):
 
     Args:
         config_path: Path to mcp-app.yaml. None = read from cwd.
-        user: User identity. Overrides stdio.user from yaml.
+        user: User identity (required). Passed via --user flag on the CLI.
     """
     import asyncio
     import mcp_app
@@ -193,11 +193,11 @@ def run_stdio(config_path: Path | None = None, user: str | None = None):
     mcp, store, config = build_stdio(config_path)
     mcp_app._store = store
 
-    user_id = user or config.get("stdio", {}).get("user")
-    if not user_id:
+    if not user:
         raise RuntimeError(
-            "No user specified. Use --user flag or configure stdio.user "
-            "in mcp-app.yaml:\n\n  stdio:\n    user: \"local\"\n"
+            "No user specified. Use the --user flag:\n"
+            "  mcp-app stdio --user local\n"
+            "  my-app-mcp stdio --user alice@example.com"
         )
 
     adapter = DataStoreAuthAdapter(store)
