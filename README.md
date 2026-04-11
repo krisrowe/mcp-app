@@ -1,6 +1,44 @@
 # mcp-app
 
-Framework for building and running MCP servers as HTTP services. Define tools as pure Python functions, wire up with two lines, run with one command.
+Framework for building and running MCP servers as HTTP services.
+Define tools as pure Python functions, wire up with two lines, run
+with one command.
+
+## Why mcp-app
+
+FastMCP is great for quickly spinning up a local tool. But as soon
+as you want to productize it, share it with others, or use it across
+multiple identities, you end up building auth, user management, admin
+endpoints, and deployment config into each app. They all invariably
+get done a little differently.
+
+When you're moving at the speed of agents — building and releasing
+impactful tools quickly — you need them to be consistent and secure
+without repeating boilerplate into each one and trying to manage all
+the implementations. You want to scale impact instead of adding to
+the cognitive load needed to keep deploying and trusting you'll be
+able to come back and refresh a token or add a user months later.
+
+mcp-app gives you:
+
+- **Identity enforced by default.** JWT auth runs automatically.
+  Tools can't execute without an established user. You can't
+  accidentally ship a wide-open service.
+- **User management built in.** Admin endpoints, CLI for local and
+  remote user management, typed profile per user — identical across
+  every app.
+- **Both transports, same code.** `serve` (HTTP) and `stdio`
+  (local) from one `App` object.
+- **Free tests for your app.** `mcp_app.testing` checks auth,
+  admin, wiring, and tool coverage against your specific app.
+  Import the tests, run pytest, confirm everything works.
+- **Deployment-ready.** Container, bare metal, Cloud Run, or gapp.
+
+The consistency is the point. User management, token rotation, auth
+enforcement, admin CLI — these work the same way across all your
+solutions. Learn it once, the tests confirm it works, and when you
+need to update a token or revoke a user six months later, the
+workflow is the same regardless of which app you're touching.
 
 ## Install
 

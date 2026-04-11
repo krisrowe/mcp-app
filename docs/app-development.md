@@ -3,7 +3,18 @@
 How to wire up an app that uses mcp-app for identity, user
 management, and MCP server hosting.
 
-## App __init__.py
+## The `App` Object
+
+The `App` class is the single composition root for your solution.
+It serves two purposes:
+
+1. **Runtime configuration** — declares your app's name, tools
+   module, store, profile model, and middleware. CLIs (serve,
+   stdio, admin) derive from it automatically.
+2. **Testability** — `mcp_app.testing` discovers your `App` and
+   runs auth, admin, wiring, and tool coverage tests against it.
+   The test suite passing is the definitive confirmation that
+   your app is correctly built.
 
 Everything mcp-app needs from your app goes in `__init__.py`:
 
@@ -11,35 +22,34 @@ Everything mcp-app needs from your app goes in `__init__.py`:
 
 ```python
 # my_app/__init__.py
-APP_NAME = "my-app"
+from mcp_app import App
+from my_app.mcp import tools
 
-from mcp_app.cli import create_admin_cli, create_mcp_cli
-
-mcp_cli = create_mcp_cli(APP_NAME)
-admin_cli = create_admin_cli(APP_NAME)
+app = App(name="my-app", tools_module=tools)
 ```
 
 **API-proxy app** (per-user backend credentials):
 
 ```python
 # my_app/__init__.py
-APP_NAME = "my-app"
-
 from pydantic import BaseModel
-from mcp_app.context import register_profile
-from mcp_app.cli import create_admin_cli, create_mcp_cli
+from mcp_app import App
+from my_app.mcp import tools
 
 class Profile(BaseModel):
     token: str
 
-register_profile(Profile, expand=True)
-
-mcp_cli = create_mcp_cli(APP_NAME)
-admin_cli = create_admin_cli(APP_NAME)
+app = App(
+    name="my-app",
+    tools_module=tools,
+    profile_model=Profile,
+    profile_expand=True,
+)
 ```
 
-`expand=True` generates typed CLI flags (`--token`) on the admin
-CLI. `expand=False` accepts profile as a JSON string or `@file`.
+`profile_expand=True` generates typed CLI flags (`--token`) on
+the admin CLI. `profile_expand=False` accepts profile as JSON
+or `@file`.
 
 ## pyproject.toml Entry Points
 
@@ -49,33 +59,40 @@ name = "my-app"
 dependencies = ["mcp-app"]
 
 [project.scripts]
-my-app = "my_app.cli:cli"           # app's own CLI (optional)
-my-app-mcp = "my_app:mcp_cli"       # serve, stdio
-my-app-admin = "my_app:admin_cli"    # connect, users, tokens, health
+my-app = "my_app.cli:cli"               # app's own CLI (optional)
+my-app-mcp = "my_app:app.mcp_cli"       # serve, stdio
+my-app-admin = "my_app:app.admin_cli"    # connect, users, tokens, health
+
+[project.entry-points."mcp_app.apps"]
+my-app = "my_app:app"
 ```
 
-One `pipx install my-app` creates all three commands.
+One `pipx install my-app` creates all three commands. The
+`mcp_app.apps` entry point lets the test suite and tooling
+discover the app.
 
 ### Multi-package repos
 
 If SDK, MCP, and CLI are separate installable packages, put the
-mcp-app integration in the MCP package (where mcp-app is a
-dependency):
+`App` object in the MCP package (where mcp-app is a dependency):
 
 ```python
 # mcp/my_app_mcp/__init__.py
-from my_app import APP_NAME
-from mcp_app.cli import create_admin_cli, create_mcp_cli
+from mcp_app import App
+from my_app_mcp import tools
+import my_app
 
-mcp_cli = create_mcp_cli(APP_NAME)
-admin_cli = create_admin_cli(APP_NAME)
+app = App(name="my-app", tools_module=tools, sdk_package=my_app)
 ```
 
 ```toml
 # mcp/pyproject.toml
 [project.scripts]
-my-app-mcp = "my_app_mcp:mcp_cli"
-my-app-admin = "my_app_mcp:admin_cli"
+my-app-mcp = "my_app_mcp:app.mcp_cli"
+my-app-admin = "my_app_mcp:app.admin_cli"
+
+[project.entry-points."mcp_app.apps"]
+my-app = "my_app_mcp:app"
 ```
 
 ## User Management Workflow
@@ -228,16 +245,57 @@ def test_user():
 ### Full-stack HTTP test
 
 ```python
-from mcp_app.bootstrap import build_app
 import httpx
 
 @pytest.fixture
-def app_client(tmp_path):
+def app_client(app, tmp_path):
     os.environ["APP_USERS_PATH"] = str(tmp_path / "users")
     os.environ["SIGNING_KEY"] = "test-key-32chars-minimum-length!!"
-    app, mcp, store, config = build_app()
-    transport = httpx.ASGITransport(app=app)
+    asgi_app, mcp, store = app.build_asgi()
+    transport = httpx.ASGITransport(app=asgi_app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 ```
 
 If it works in httpx ASGI transport, it works in Docker.
+
+## Confirming Your App Works
+
+The definitive confirmation that your app is correctly built is
+that mcp-app's test suite passes against it. These tests check
+auth enforcement, user admin, JWT handling, CLI wiring, tool
+protocol compliance, and SDK test coverage — the mission-critical
+operational functionality that mcp-app provides.
+
+### 1. Create `tests/framework/conftest.py`
+
+```python
+import pytest
+from my_app import app
+
+@pytest.fixture(scope="session")
+def app():
+    return app
+```
+
+### 2. Create `tests/framework/test_framework.py`
+
+```python
+from mcp_app.testing.iam import *
+from mcp_app.testing.wiring import *
+from mcp_app.testing.tools import *
+from mcp_app.testing.health import *
+```
+
+This file is identical across all mcp-app solutions. The
+`conftest.py` is the only file that changes — it points the
+tests at your specific `App` object.
+
+### 3. Run
+
+```bash
+pytest tests/
+```
+
+Zero failures means: auth works, admin works, tools are wired,
+identity is enforced, and the SDK has test coverage for every
+tool. Your app is correctly built on mcp-app.

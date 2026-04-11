@@ -23,6 +23,37 @@ rather than the app).
 "free tests for auth and admin" or just reference the subsystem
 package name directly.
 
+### Every mcp-app change must be reviewed against the skill
+
+The `author-mcp-app` skill (currently in echoskill, planned to
+move into this repo per echomodel/echomodel#46) is the primary
+guide agents and developers use to build, migrate, and review
+apps on this framework. Any change to mcp-app — new features,
+API changes, behavioral changes, new configuration, new testing
+patterns — must be accompanied by a review of the skill to ensure
+it captures the change. If the skill doesn't reflect the current
+framework, agents will build apps wrong.
+
+This includes changes to: the `App` class, `mcp_app.testing`
+modules, CLI factories, bootstrap, middleware, store protocol,
+identity enforcement, admin endpoints, entry point conventions,
+and deployment patterns. If it affects how an implementer
+integrates, configures, tests, or deploys — the skill must be
+updated.
+
+### The test suite is the acceptance criteria
+
+Any change to mcp-app must pass `make test` (which runs both
+mcp-app's own unit tests AND the test suite against the fixture
+app). If a change breaks a test module in `mcp_app.testing`, it
+breaks every implementing app's test run — that's the point.
+
+For implementing apps, the test suite passing is the definitive
+confirmation that the app is correctly built. The `author-mcp-app`
+skill uses this as its final step: adopt the test suite, run it,
+confirm zero failures. If it passes, auth works, admin works,
+tools are wired, identity is enforced.
+
 ## Architectural Decisions
 
 ### Agent-composed over provider-coupled (admin tools)
