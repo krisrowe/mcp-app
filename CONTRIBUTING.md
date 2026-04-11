@@ -19,7 +19,7 @@ tools that the AI agent orchestrates externally.
   in sequence
 
 **What this means in practice:**
-- AdminClient is stateless — takes a URL and signing key, makes REST calls
+- RemoteAuthAdapter is stateless — takes a URL and signing key, makes REST calls
 - MCP admin tools take `base_url` and `signing_key` as explicit parameters
 - No internal references to gapp, Cloud Run, or any deployment tool
 - The admin tools don't know how the service was deployed or where the signing
@@ -110,7 +110,7 @@ module has no framework coupling.
 - `UserDataStore` protocol + `FileSystemUserDataStore`
 - `DataStoreAuthAdapter` bridge
 - `JWTVerifier`
-- `AdminClient` — stateless REST client for deployed instances
+- `RemoteAuthAdapter` — stateless REST client for deployed instances
 - MCP admin tools server (`mcp-app admin-tools`)
 
 ### What mcp-app does NOT provide
@@ -404,7 +404,7 @@ that haven't migrated to mcp-app.
 
 All business logic lives in the core layer, not in CLI or MCP wrappers.
 
-- `admin_client.py` — AdminClient SDK, REST client for deployed instances
+- `admin_client.py` — RemoteAuthAdapter, UserAuthStore over HTTP
 - `cli.py` — thin Click wrapper, calls SDK, formats output
 - `admin_tools.py` — thin MCP wrapper, calls SDK, handles tool schema
 
@@ -438,7 +438,7 @@ cleanup.
 Docker.** The ASGI app is the app. Transport is just how bytes get in
 and out.
 
-httpx is already a direct dependency of mcp-app (used by AdminClient),
+httpx is already a direct dependency of mcp-app (used by RemoteAuthAdapter),
 so solutions get it for free. No extra dependencies to write tests.
 
 ### What to test in solutions
@@ -501,10 +501,10 @@ mcp-app uses the same pattern internally:
 ```python
 transport = httpx.ASGITransport(app=starlette_app)
 http_client = httpx.AsyncClient(transport=transport, base_url="http://test")
-client = AdminClient("http://test", signing_key, http_client=http_client)
+client = RemoteAuthAdapter("http://test", signing_key, http_client=http_client)
 ```
 
-AdminClient → httpx → ASGI → Starlette → admin.py → FileSystemUserDataStore → tmp_path.
+RemoteAuthAdapter → httpx → ASGI → Starlette → admin.py → FileSystemUserDataStore → tmp_path.
 
 ### stdio validation
 
@@ -539,7 +539,7 @@ What it doesn't test (and doesn't need to):
 
 ## Dependencies
 
-httpx is a direct dependency (used by AdminClient). It is also the #2 Python
+httpx is a direct dependency (used by RemoteAuthAdapter). It is also the #2 Python
 HTTP client by downloads (~500M/month), maintained by Encode (author of Django
 REST Framework and Starlette), and a hard dependency of every major AI SDK
 (OpenAI, Anthropic, Google GenAI). It was already a transitive dependency via
