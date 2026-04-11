@@ -1,9 +1,10 @@
-"""mcp-app CLI — serve, stdio, setup, and user management."""
+"""mcp-app CLI — remote admin and app CLI factories."""
 
 import asyncio
 import json
 import os
 from pathlib import Path
+from types import ModuleType
 
 import click
 
@@ -11,7 +12,6 @@ import click
 # --- Config helpers ---
 
 def _config_dir(app_name: str | None = None) -> Path:
-    """XDG config path for an app or mcp-app generic."""
     xdg = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     name = app_name or "mcp-app"
     return Path(xdg) / name
@@ -63,7 +63,6 @@ def _run(coro):
 # --- Profile helpers ---
 
 def _parse_profile_value(value: str) -> dict:
-    """Parse a profile value: JSON string or @file."""
     if value.startswith("@"):
         path = Path(value[1:])
         if not path.exists():
@@ -73,7 +72,6 @@ def _parse_profile_value(value: str) -> dict:
 
 
 def _collect_profile_from_flags(ctx: click.Context) -> dict | None:
-    """Collect profile data from dynamically generated flags."""
     from mcp_app.context import get_profile_model
     model = get_profile_model()
     if not model:
@@ -87,17 +85,15 @@ def _collect_profile_from_flags(ctx: click.Context) -> dict | None:
 
 
 def _validate_profile(data: dict) -> dict:
-    """Validate profile data against the registered model."""
     from mcp_app.context import get_profile_model
     model = get_profile_model()
     if model and data:
-        obj = model(**data)  # Pydantic validates
+        obj = model(**data)
         return obj.model_dump()
     return data
 
 
 def _profile_help_text() -> str:
-    """Generate help text for profile fields from registered model."""
     from mcp_app.context import get_profile_model
     model = get_profile_model()
     if not model:
@@ -111,90 +107,19 @@ def _profile_help_text() -> str:
     return "\n".join(lines)
 
 
-# --- Main CLI ---
+# --- Main CLI (remote admin only) ---
 
 @click.group()
 def main():
-    """MCP application framework."""
+    """mcp-app — remote admin for deployed instances."""
     pass
 
-
-@main.command()
-@click.argument("app_path", required=False, default=None)
-@click.option("--host", default="0.0.0.0")
-@click.option("--port", default=8080, type=int)
-def serve(app_path, host, port):
-    """Run MCP server over HTTP (production, multi-user).
-
-    APP_PATH: Optional path to the directory containing mcp-app.yaml.
-    Defaults to the current working directory.
-    """
-    import uvicorn
-    from mcp_app.bootstrap import build_app
-
-    config_path = Path(app_path) / "mcp-app.yaml" if app_path else None
-    app, mcp, store, config = build_app(config_path)
-
-    import mcp_app
-    mcp_app._store = store
-
-    uvicorn.run(app, host=host, port=port)
-
-
-@main.command()
-@click.argument("app_path", required=False, default=None)
-@click.option("--user", default=None, help="Override stdio.user from yaml.")
-def stdio(app_path, user):
-    """Run MCP server over stdio (local, single user).
-
-    APP_PATH: Optional path to the directory containing mcp-app.yaml.
-    Defaults to the current working directory.
-
-    Reads mcp-app.yaml, discovers tools, wires the store, and runs
-    FastMCP over stdin/stdout. No middleware, no admin endpoints.
-    """
-    from mcp_app.bootstrap import build_stdio
-    from mcp_app.context import current_user, hydrate_profile
-    from mcp_app.models import UserRecord
-
-    config_path = Path(app_path) / "mcp-app.yaml" if app_path else None
-    mcp, store, config = build_stdio(config_path)
-
-    import mcp_app
-    mcp_app._store = store
-
-    # Resolve user identity: --user flag overrides yaml
-    user_id = user or config.get("stdio", {}).get("user")
-    if not user_id:
-        raise click.ClickException(
-            "No user specified. Use --user flag or configure stdio.user "
-            "in mcp-app.yaml:\n\n  stdio:\n    user: \"local\"\n"
-        )
-
-    # Load full user record from store (auth + profile in one read)
-    from mcp_app.bridge import DataStoreAuthAdapter
-    adapter = DataStoreAuthAdapter(store)
-    user_record = _run(adapter.get_full(user_id))
-    if user_record:
-        user_record.profile = hydrate_profile(user_record.profile)
-    else:
-        user_record = UserRecord(email=user_id)
-
-    current_user.set(user_record)
-
-    mcp.run(transport="stdio")
-
-
-# --- Setup ---
 
 @main.command()
 @click.argument("url")
 @click.option("--signing-key", default=None, help="Signing key for admin auth.")
 def setup(url, signing_key):
-    """Configure connection to a deployed instance.
-
-    Saves the URL and signing key for subsequent user management commands.
-    """
+    """Configure connection to a deployed instance."""
     data = _load_setup()
     data["url"] = url
     if signing_key:
@@ -204,7 +129,7 @@ def setup(url, signing_key):
 
 
 @main.command()
-@click.option("--url", default=None, help="Base URL of the deployed instance.")
+@click.option("--url", default=None)
 @click.option("--signing-key", default=None)
 def health(url, signing_key):
     """Check health of a deployed instance."""
@@ -214,8 +139,6 @@ def health(url, signing_key):
     result = _run(client.health_check())
     click.echo(f"{result['status']} ({result['status_code']})")
 
-
-# --- User management (remote) ---
 
 @main.group()
 def users():
@@ -228,13 +151,13 @@ def users():
 @click.option("--signing-key", default=None)
 def users_list(url, signing_key):
     """List registered users."""
-    result = _run(_client(url, signing_key).list_users())
+    result = _run(_client(url, signing_key).list())
     if not result:
         click.echo("No users.")
         return
     for user in result:
-        status = " (revoked)" if user.get("revoke_after") else ""
-        click.echo(f"  {user['email']}{status}")
+        status = " (revoked)" if user.revoke_after else ""
+        click.echo(f"  {user.email}{status}")
 
 
 @users.command("add")
@@ -243,22 +166,23 @@ def users_list(url, signing_key):
               help="Profile data as JSON string or @file.")
 @click.option("--url", default=None)
 @click.option("--signing-key", default=None)
-@click.pass_context
-def users_add(ctx, email, profile_str, url, signing_key):
+def users_add(email, profile_str, url, signing_key):
     """Register a user and get their token."""
-    # Resolve profile from --profile flag or expanded flags
+    from datetime import datetime, timezone
+    from mcp_app.models import UserAuthRecord
+
     profile = None
     if profile_str:
         profile = _parse_profile_value(profile_str)
-    else:
-        profile = _collect_profile_from_flags(ctx)
-
-    if profile:
         profile = _validate_profile(profile)
 
-    result = _run(_client(url, signing_key).register_user(email, profile))
+    result = _run(_client(url, signing_key).save(
+        UserAuthRecord(email=email, created=datetime.now(timezone.utc)),
+        profile=profile,
+    ))
     click.echo(f"Registered: {result['email']}")
-    click.echo(f"Token: {result['token']}")
+    if "token" in result:
+        click.echo(f"Token: {result['token']}")
 
 
 @users.command("revoke")
@@ -267,11 +191,9 @@ def users_add(ctx, email, profile_str, url, signing_key):
 @click.option("--signing-key", default=None)
 def users_revoke(email, url, signing_key):
     """Revoke a user's access."""
-    result = _run(_client(url, signing_key).revoke_user(email))
-    click.echo(f"Revoked: {result['revoked']}")
+    _run(_client(url, signing_key).delete(email))
+    click.echo(f"Revoked: {email}")
 
-
-# --- Token management ---
 
 @main.group()
 def tokens():
@@ -298,58 +220,6 @@ def admin_tools():
 
 # --- App CLI factories ---
 
-def _find_app_config(app_name: str) -> Path | None:
-    """Find mcp-app.yaml bundled in an installed app package."""
-    import importlib
-    pkg = importlib.import_module(app_name.replace("-", "_"))
-    config_path = Path(pkg.__file__).parent / "mcp-app.yaml"
-    return config_path if config_path.exists() else None
-
-
-def create_mcp_cli(app_name: str) -> click.Group:
-    """Create the MCP server CLI for an app (serve, stdio).
-
-    Usage in app's __init__.py:
-        mcp_cli = create_mcp_cli("my-app")
-
-    pyproject.toml:
-        [project.scripts]
-        my-app-mcp = "my_app:mcp_cli"
-    """
-
-    @click.group()
-    def cli():
-        """MCP server commands."""
-        pass
-
-    @cli.command()
-    @click.option("--host", default="0.0.0.0")
-    @click.option("--port", default=8080, type=int)
-    def serve(host, port):
-        """Run MCP server over HTTP."""
-        import uvicorn
-        from mcp_app.bootstrap import build_app
-
-        config_path = _find_app_config(app_name)
-        app, mcp, store, config = build_app(config_path)
-        import mcp_app
-        mcp_app._store = store
-        uvicorn.run(app, host=host, port=port)
-
-    @cli.command()
-    @click.option("--user", default=None, help="User identity for this session.")
-    def stdio(user):
-        """Run MCP server over stdio."""
-        from mcp_app.bootstrap import run_stdio
-        config_path = _find_app_config(app_name)
-        try:
-            run_stdio(config_path=config_path, user=user)
-        except RuntimeError as e:
-            raise click.ClickException(str(e))
-
-    return cli
-
-
 def _get_auth_store(app_name: str):
     """Get the auth store based on connect config — local or remote."""
     cfg = _load_setup(app_name)
@@ -371,6 +241,68 @@ def _get_auth_store(app_name: str):
         )
 
 
+def create_mcp_cli(app_name: str, tools_module: ModuleType | None = None) -> click.Group:
+    """Create the MCP server CLI for an app (serve, stdio).
+
+    Args:
+        app_name: App name (server name, store paths).
+        tools_module: Python module containing async tool functions.
+            If None, imported as {app_name}.mcp.tools.
+
+    Usage:
+        from my_app.mcp import tools
+        mcp_cli = create_mcp_cli("my-app", tools_module=tools)
+
+        # or with convention (single-package):
+        mcp_cli = create_mcp_cli("my-app")
+    """
+
+    @click.group()
+    def cli():
+        """MCP server commands."""
+        pass
+
+    @cli.command()
+    @click.option("--host", default="0.0.0.0")
+    @click.option("--port", default=8080, type=int)
+    def serve(host, port):
+        """Run MCP server over HTTP."""
+        import uvicorn
+        import mcp_app
+        from mcp_app.bootstrap import build_asgi
+
+        resolved = _resolve_tools(app_name, tools_module)
+        app, mcp, store = build_asgi(app_name, resolved)
+        mcp_app._store = store
+        uvicorn.run(app, host=host, port=port)
+
+    @cli.command()
+    @click.option("--user", required=True, help="User identity for this session.")
+    def stdio(user):
+        """Run MCP server over stdio."""
+        from mcp_app.bootstrap import run_stdio
+
+        resolved = _resolve_tools(app_name, tools_module)
+        run_stdio(app_name, resolved, user)
+
+    return cli
+
+
+def _resolve_tools(app_name: str, tools_module: ModuleType | None) -> ModuleType:
+    """Resolve tools module — use provided or import by convention."""
+    if tools_module is not None:
+        return tools_module
+    import importlib
+    module_name = f"{app_name.replace('-', '_')}.mcp.tools"
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        raise click.ClickException(
+            f"Could not import tools module '{module_name}'. "
+            f"Pass tools_module explicitly to create_mcp_cli()."
+        )
+
+
 def create_admin_cli(app_name: str) -> click.Group:
     """Create the admin CLI for an app (connect, users, tokens, health).
 
@@ -379,12 +311,8 @@ def create_admin_cli(app_name: str) -> click.Group:
     All user operations go through UserAuthStore — local or remote
     determined by connect config.
 
-    Usage in app's __init__.py:
+    Usage:
         admin_cli = create_admin_cli("my-app")
-
-    pyproject.toml:
-        [project.scripts]
-        my-app-admin = "my_app:admin_cli"
     """
     from mcp_app.context import get_profile_model, get_profile_expand
 
@@ -393,7 +321,6 @@ def create_admin_cli(app_name: str) -> click.Group:
         """Admin commands — user management and health."""
         pass
 
-    # Connect
     @cli.command()
     @click.argument("target")
     @click.option("--signing-key", default=None)
@@ -415,7 +342,6 @@ def create_admin_cli(app_name: str) -> click.Group:
             _save_setup(data, app_name=app_name)
             click.echo(f"Configured {app_name}: {target}")
 
-    # Health
     @cli.command()
     def health():
         """Check health of the configured instance."""
@@ -431,7 +357,6 @@ def create_admin_cli(app_name: str) -> click.Group:
         result = _run(adapter.health_check())
         click.echo(f"{result['status']} ({result['status_code']})")
 
-    # Users group
     @cli.group()
     def users():
         """Manage users."""
@@ -483,7 +408,6 @@ def create_admin_cli(app_name: str) -> click.Group:
 
         email = kwargs.pop("email")
 
-        # Resolve profile
         profile = None
         if model and expand:
             data = {k: v for k, v in kwargs.items() if v is not None}
@@ -511,7 +435,6 @@ def create_admin_cli(app_name: str) -> click.Group:
         _run(store.delete(email))
         click.echo(f"Revoked: {email}")
 
-    # Tokens
     @cli.group()
     def tokens():
         """Manage tokens."""

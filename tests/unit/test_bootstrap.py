@@ -1,35 +1,20 @@
-"""Tests for mcp-app bootstrap — config loading, tool discovery, app building."""
+"""Tests for mcp-app bootstrap — tool discovery, store building, app building."""
 
 import os
+import sys
 import pytest
 from pathlib import Path
+from types import ModuleType
 
 from mcp_app.bootstrap import (
-    load_config,
     _resolve_class,
-    _discover_tools,
-    build_mcp,
-    build_store,
+    _discover_tools_from_module,
+    _build_mcp,
+    _build_store,
+    build_asgi,
     STORE_ALIASES,
     MIDDLEWARE_ALIASES,
 )
-
-
-# --- Config loading ---
-
-def test_load_config(tmp_path):
-    (tmp_path / "mcp-app.yaml").write_text(
-        "name: test-app\nstore: filesystem\ntools: my.module\n"
-    )
-    config = load_config(tmp_path / "mcp-app.yaml")
-    assert config["name"] == "test-app"
-    assert config["store"] == "filesystem"
-    assert config["tools"] == "my.module"
-
-
-def test_load_config_missing():
-    with pytest.raises(FileNotFoundError):
-        load_config(Path("/nonexistent/mcp-app.yaml"))
 
 
 # --- Class resolution ---
@@ -59,9 +44,8 @@ def test_resolve_middleware_alias():
 
 # --- Tool discovery ---
 
-def test_discover_tools_finds_async_functions(tmp_path):
+def test_discover_tools_from_module(tmp_path):
     """Create a temp module with async functions and discover them."""
-    import sys
     mod_dir = tmp_path / "test_tools_pkg"
     mod_dir.mkdir()
     (mod_dir / "__init__.py").write_text("")
@@ -77,7 +61,9 @@ def test_discover_tools_finds_async_functions(tmp_path):
     )
     sys.path.insert(0, str(tmp_path))
     try:
-        tools = _discover_tools("test_tools_pkg.tools")
+        import importlib
+        mod = importlib.import_module("test_tools_pkg.tools")
+        tools = _discover_tools_from_module(mod)
         names = [f.__name__ for f in tools]
         assert "public_tool" in names
         assert "another_tool" in names
@@ -92,24 +78,20 @@ def test_discover_tools_finds_async_functions(tmp_path):
 def test_build_store_filesystem(tmp_path):
     os.environ["APP_USERS_PATH"] = str(tmp_path / "users")
     try:
-        config = {"name": "test-app", "store": "filesystem"}
-        store = build_store(config)
+        store = _build_store("test-app")
         assert store.base == tmp_path / "users"
     finally:
         del os.environ["APP_USERS_PATH"]
 
 
 def test_build_store_default_name():
-    config = {"store": "filesystem"}
-    store = build_store(config)
+    store = _build_store("mcp-app")
     assert "mcp-app" in str(store.base)
 
 
 # --- MCP building ---
 
 def test_build_mcp_registers_tools(tmp_path):
-    """Build MCP from config with a real tools module."""
-    import sys
     mod_dir = tmp_path / "mcp_test_pkg"
     mod_dir.mkdir()
     (mod_dir / "__init__.py").write_text("")
@@ -120,14 +102,35 @@ def test_build_mcp_registers_tools(tmp_path):
     )
     sys.path.insert(0, str(tmp_path))
     try:
-        config = {"name": "test", "tools": "mcp_test_pkg.tools"}
-        mcp = build_mcp(config)
+        import importlib
+        mod = importlib.import_module("mcp_test_pkg.tools")
+        mcp = _build_mcp("test", mod)
         tool_names = [t.name for t in mcp._tool_manager.list_tools()]
         assert "greet" in tool_names
     finally:
         sys.path.remove(str(tmp_path))
 
 
-def test_build_mcp_requires_tools():
-    with pytest.raises(ValueError, match="must specify 'tools'"):
-        build_mcp({"name": "test"})
+# --- Full app building ---
+
+def test_build_asgi_creates_app(tmp_path):
+    os.environ["APP_USERS_PATH"] = str(tmp_path / "users")
+    os.environ["SIGNING_KEY"] = "test-key-32chars-minimum-length!!"
+    try:
+        mod_dir = tmp_path / "asgi_test_pkg"
+        mod_dir.mkdir()
+        (mod_dir / "__init__.py").write_text("")
+        (mod_dir / "tools.py").write_text(
+            "async def ping() -> dict:\n"
+            "    return {'pong': True}\n"
+        )
+        sys.path.insert(0, str(tmp_path))
+        import importlib
+        mod = importlib.import_module("asgi_test_pkg.tools")
+        app, mcp, store = build_asgi("test", mod)
+        assert app is not None
+        assert len(mcp._tool_manager.list_tools()) == 1
+        sys.path.remove(str(tmp_path))
+    finally:
+        del os.environ["APP_USERS_PATH"]
+        del os.environ["SIGNING_KEY"]

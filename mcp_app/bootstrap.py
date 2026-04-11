@@ -1,13 +1,13 @@
-"""Bootstrap — reads mcp-app.yaml, discovers tools, builds the app."""
+"""Bootstrap — builds the MCP app from Python objects, no config files."""
 
+import asyncio
 import contextlib
 import functools
-import importlib
 import inspect
 import os
 from pathlib import Path
+from types import ModuleType
 
-import yaml
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.routing import Mount
@@ -24,36 +24,26 @@ STORE_ALIASES = {
     "filesystem": FileSystemUserDataStore,
 }
 
-# Built-in middleware aliases — for custom middleware via module path
+# Built-in middleware aliases
 MIDDLEWARE_ALIASES = {
     "user-identity": JWTMiddleware,
 }
 
 
-def load_config(config_path: Path | None = None) -> dict:
-    """Load mcp-app.yaml from cwd or specified path."""
-    if config_path is None:
-        config_path = Path.cwd() / "mcp-app.yaml"
-    if not config_path.exists():
-        raise FileNotFoundError(f"No mcp-app.yaml found at {config_path}")
-    with open(config_path) as f:
-        return yaml.safe_load(f) or {}
-
-
 def _resolve_class(value: str, aliases: dict):
     """Resolve an alias or module path to a class."""
+    import importlib as _il
     if "." not in value:
         if value not in aliases:
             raise ValueError(f"Unknown alias '{value}'. Valid: {', '.join(sorted(aliases))}")
         return aliases[value]
     module_path, class_name = value.rsplit(".", 1)
-    module = importlib.import_module(module_path)
+    module = _il.import_module(module_path)
     return getattr(module, class_name)
 
 
-def _discover_tools(module_path: str) -> list:
-    """Import a module and find all async functions (tools)."""
-    module = importlib.import_module(module_path)
+def _discover_tools_from_module(module: ModuleType) -> list:
+    """Find all public async functions in a module."""
     tools = []
     for name, obj in inspect.getmembers(module, inspect.isfunction):
         if inspect.iscoroutinefunction(obj) and not name.startswith("_"):
@@ -73,67 +63,61 @@ def _require_identity(func):
             raise ValueError(
                 "No authenticated user identity established. "
                 "HTTP: ensure SIGNING_KEY is set. "
-                "stdio: configure stdio.user in mcp-app.yaml."
+                "stdio: pass --user flag."
             )
         return await func(*args, **kwargs)
     return wrapper
 
 
-def build_mcp(config: dict) -> FastMCP:
+def _build_mcp(name: str, tools_module: ModuleType) -> FastMCP:
     """Create FastMCP instance and register discovered tools."""
-    name = config.get("name", "mcp-app")
     mcp = FastMCP(name, stateless_http=True, json_response=True, streamable_http_path="/")
     mcp.settings.transport_security.enable_dns_rebinding_protection = False
 
-    tools_module = config.get("tools")
-    if not tools_module:
-        raise ValueError("mcp-app.yaml must specify 'tools' module path")
-
-    for func in _discover_tools(tools_module):
+    for func in _discover_tools_from_module(tools_module):
         mcp.tool()(_require_identity(func))
 
     return mcp
 
 
-def build_store(config: dict):
-    """Create the data store from config."""
-    store_value = config.get("store", "filesystem")
-    store_cls = _resolve_class(store_value, STORE_ALIASES)
-    app_name = config.get("name", "mcp-app")
-    return store_cls(app_name=app_name)
+def _build_store(name: str, store: str = "filesystem"):
+    """Create the data store."""
+    store_cls = _resolve_class(store, STORE_ALIASES)
+    return store_cls(app_name=name)
 
 
-def build_asgi(config: dict, mcp: FastMCP, store) -> Starlette:
-    """Build the full ASGI app with identity middleware and admin.
+def build_asgi(name: str, tools_module: ModuleType,
+               store_backend: str = "filesystem",
+               middleware: list[str] | None = None) -> tuple:
+    """Build the full ASGI app.
 
-    Identity middleware (user-identity) always runs. Additional custom
-    middleware can be specified in mcp-app.yaml:
+    Args:
+        name: App name (server name, store paths).
+        tools_module: Python module containing async tool functions.
+        store_backend: Store alias or module path. Default: "filesystem".
+        middleware: Custom middleware list. None = user-identity (default).
+            Empty list = no auth.
 
-        middleware:
-          - my_app.auth.CustomMiddleware
-
-    Set middleware to an empty list to disable all middleware (no auth).
-    Omit middleware entirely for the default (user-identity only).
+    Returns:
+        (app, mcp, store) tuple.
     """
+    store = _build_store(name, store_backend)
+    mcp = _build_mcp(name, tools_module)
+
     auth_store = DataStoreAuthAdapter(store)
     verifier = JWTVerifier(auth_store)
     admin_app = create_admin_app(auth_store)
 
     inner = mcp.streamable_http_app()
 
-    # Determine middleware stack
-    if "middleware" in config and config["middleware"] == []:
-        # Explicitly empty — no middleware (no auth)
+    if middleware is not None and middleware == []:
         wrapped = inner
-    elif "middleware" in config:
-        # Custom middleware specified — use as-is (user must include
-        # user-identity explicitly if they want it)
+    elif middleware is not None:
         wrapped = inner
-        for mw_value in reversed(config["middleware"]):
+        for mw_value in reversed(middleware):
             mw_cls = _resolve_class(mw_value, MIDDLEWARE_ALIASES)
             wrapped = mw_cls(wrapped, verifier, store)
     else:
-        # Default — user-identity runs automatically
         wrapped = JWTMiddleware(inner, verifier)
 
     @contextlib.asynccontextmanager
@@ -141,7 +125,7 @@ def build_asgi(config: dict, mcp: FastMCP, store) -> Starlette:
         async with mcp.session_manager.run():
             yield
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Mount("/admin", app=admin_app),
             Mount("/", app=wrapped),
@@ -149,63 +133,66 @@ def build_asgi(config: dict, mcp: FastMCP, store) -> Starlette:
         lifespan=lifespan,
     )
 
-
-def build_stdio(config_path: Path | None = None):
-    """Build for stdio transport: tools + store, no middleware/admin/ASGI."""
-    config = load_config(config_path)
-    store = build_store(config)
-
-    name = config.get("name", "mcp-app")
-    mcp = FastMCP(name)
-
-    tools_module = config.get("tools")
-    if not tools_module:
-        raise ValueError("mcp-app.yaml must specify 'tools' module path")
-
-    for func in _discover_tools(tools_module):
-        mcp.tool()(_require_identity(func))
-
-    return mcp, store, config
+    return app, mcp, store
 
 
-def build_app(config_path: Path | None = None):
-    """One-shot: load config, build everything, return ASGI app + mcp + store."""
-    config = load_config(config_path)
-    store = build_store(config)
-    mcp = build_mcp(config)
-    app = build_asgi(config, mcp, store)
-    return app, mcp, store, config
+def build_app(name: str = None, tools_module: ModuleType = None,
+              store_backend: str = "filesystem",
+              middleware: list[str] | None = None,
+              config: dict | None = None) -> tuple:
+    """One-shot: build everything, return (app, mcp, store, config).
+
+    Either pass name + tools_module directly, or pass a config dict
+    with 'name' and 'tools' (module path string) keys.
+    """
+    if config:
+        import importlib
+        name = name or config.get("name", "mcp-app")
+        if tools_module is None:
+            tools_path = config.get("tools")
+            if not tools_path:
+                raise ValueError("config must include 'tools' module path")
+            tools_module = importlib.import_module(tools_path)
+        store_backend = config.get("store", store_backend)
+        middleware = config.get("middleware", middleware)
+
+    if not name:
+        raise ValueError("name is required")
+    if tools_module is None:
+        raise ValueError("tools_module is required")
+
+    app, mcp, store = build_asgi(name, tools_module, store_backend, middleware)
+    return app, mcp, store, {"name": name}
 
 
-def run_stdio(config_path: Path | None = None, user: str | None = None):
-    """One-shot: build, load user, run stdio. Used by mcp-app stdio and app CLIs.
+def run_stdio(name: str, tools_module: ModuleType, user: str,
+              store_backend: str = "filesystem"):
+    """One-shot: build, load user, run stdio.
 
     Args:
-        config_path: Path to mcp-app.yaml. None = read from cwd.
-        user: User identity (required). Passed via --user flag on the CLI.
+        name: App name.
+        tools_module: Python module containing async tool functions.
+        user: User identity (required).
+        store_backend: Store alias or module path.
     """
-    import asyncio
     import mcp_app
     from mcp_app.context import current_user, hydrate_profile
     from mcp_app.models import UserRecord
-    from mcp_app.bridge import DataStoreAuthAdapter
 
-    mcp, store, config = build_stdio(config_path)
+    store = _build_store(name, store_backend)
+    mcp = FastMCP(name)
+
+    for func in _discover_tools_from_module(tools_module):
+        mcp.tool()(_require_identity(func))
+
     mcp_app._store = store
 
-    if not user:
-        raise RuntimeError(
-            "No user specified. Use the --user flag:\n"
-            "  mcp-app stdio --user local\n"
-            "  my-app-mcp stdio --user alice@example.com"
-        )
-
     adapter = DataStoreAuthAdapter(store)
-    user_record = asyncio.run(adapter.get_full(user_id))
+    user_record = asyncio.run(adapter.get_full(user))
     if user_record:
         user_record.profile = hydrate_profile(user_record.profile)
     else:
-        user_record = UserRecord(email=user_id)
+        user_record = UserRecord(email=user)
 
     current_user.set(user_record)
     mcp.run(transport="stdio")
