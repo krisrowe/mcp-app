@@ -75,6 +75,119 @@ Separate fleets eliminate this entirely. Each fleet is self-contained. Want
 local docker instances? Put them in a `local` fleet. Shared Cloud Run
 services? They're in `work`. They never mix, merge, or conflict.
 
+### Credentials are the SDK's concern, not the framework's
+
+Earlier designs had credential proxy middleware (`bearer-proxy`,
+`google-oauth2-proxy`) that loaded backend credentials, refreshed
+OAuth2 tokens, and rewrote HTTP Authorization headers. This was
+built, shipped, and removed after deeper analysis:
+
+- MCP tool functions don't read HTTP headers. The middleware rewrote
+  a header nobody consumed.
+- The SDK already knows what credentials it needs. An API-proxy SDK
+  calls an external API — it knows whether it needs a bearer token
+  or Google OAuth2. The framework adding a layer between "credential
+  in store" and "credential in SDK" added coupling without value.
+- Google's `google-auth` library handles OAuth2 refresh natively.
+  The middleware was reimplementing what the SDK's own dependencies
+  provide.
+
+Credentials are stored in the user profile (loaded once at auth time
+with the auth record). The SDK reads `current_user.get().profile` and
+interprets the contents. mcp-app doesn't know what's in the profile.
+
+### One user record, one store read
+
+Auth fields (email, created, revoke_after) and profile data are
+stored together in one record per user. The verifier loads the whole
+record in one store read and sets `current_user` — no second read
+for credentials or profile. The SDK reads what it needs from the
+already-loaded record.
+
+### Three CLI entry points per app
+
+Apps generate three separate CLI entry points from one codebase:
+
+- `my-app` — the app's own business CLI (optional, app-specific)
+- `my-app-mcp` — `serve` and `stdio` (from `create_mcp_cli`)
+- `my-app-admin` — `connect`, `users`, `tokens`, `health`
+  (from `create_admin_cli`)
+
+**Why three, not one:** The app's business CLI, MCP server commands,
+and admin operations are different concerns with different audiences.
+Mixing them in one CLI creates a confusing top-level command space.
+Separating them lets each be self-contained — `my-app-admin` can be
+used by an operator who doesn't need the app's business commands.
+
+**Why `admin` is separate from `mcp`:** Admin manages users (add,
+list, revoke). MCP runs the server (serve, stdio). An operator
+managing users on a deployed instance doesn't need serve/stdio. A
+developer running the server locally doesn't need user management
+commands in the same CLI. Different jobs, different tools.
+
+**Why `admin` is separate from the app CLI:** Admin has its own
+config (`connect local` or `connect <url>`). If admin commands
+shared the app's CLI, that config could conflict with or leak into
+the app's own configuration. `gwsa admin connect https://...`
+should never affect `gwsa drive search`. Separate entry points
+mean separate config scopes — admin writes to its own setup file,
+the app CLI never reads it.
+
+### UserAuthStore protocol — one interface, two backends
+
+User management operations (add, list, revoke) go through the
+`UserAuthStore` protocol. Two implementations:
+
+- `DataStoreAuthAdapter` — wraps any `UserDataStore` for local
+  filesystem (or any custom store). Direct store writes.
+- `RemoteAuthAdapter` — wraps HTTP calls to a deployed instance's
+  `/admin` endpoints.
+
+The CLI calls `_get_auth_store()` which returns the right adapter
+based on the `connect` config (local or remote URL). All user
+management commands use the same interface — no branching in CLI
+command code.
+
+### `connect local` vs `connect <url>`
+
+The admin CLI needs to know where to manage users. Two modes:
+
+- `connect local` — write directly to the local filesystem store.
+  For stdio apps running on this machine.
+- `connect <url> --signing-key xxx` — talk to a deployed instance
+  via HTTP admin API. For managing users on a remote server.
+
+This is configured once and remembered in
+`~/.config/{app-name}/setup.json`. Subsequent `users` commands
+route automatically. The user doesn't think about local vs remote
+on every command.
+
+### Profile registration is optional
+
+`register_profile(Model)` declares a Pydantic model for typed
+profile validation. This is for API-proxy apps that need structured
+per-user credentials. Data-owning apps (no per-user credentials)
+skip it entirely — `user.profile` is `None`.
+
+When registered with `expand=True`, the admin CLI generates typed
+flags from the model fields (e.g., `--token`). When registered with
+`expand=False`, the CLI accepts the profile as a JSON string or
+`@file`.
+
+### SIGNING_KEY has no default
+
+Earlier versions defaulted to `"dev-key"`. This was removed because
+the code is in a public repo — anyone who reads it can forge JWTs.
+`SIGNING_KEY` must be explicitly set as an environment variable for
+HTTP mode. Missing or empty raises `RuntimeError` at startup.
+
+### stdio identity comes from --user, not yaml
+
+`mcp-app stdio --user local` specifies the user identity. There is
+no `stdio.user` field in `mcp-app.yaml`. Identity is a runtime
+argument, not a versioned config setting — putting it in yaml would
+mean committing user choices to version control.
+
 ## What mcp-app Is
 
 A config-driven framework for building and running MCP servers as HTTP
