@@ -54,7 +54,7 @@ class DataStoreAuthAdapter:
                 results.append(UserAuthRecord(email=email))
         return results
 
-    async def save(self, record: UserAuthRecord, profile: dict | None = None) -> None:
+    async def save(self, record: UserAuthRecord, profile: dict | None = None) -> dict:
         """Save auth record, optionally with profile data.
 
         If profile is provided, it's merged into the stored record.
@@ -65,6 +65,7 @@ class DataStoreAuthAdapter:
         if profile is not None:
             updated["profile"] = profile
         self.store.save(record.email, self.USER_KEY, updated)
+        return {"email": record.email}
 
     async def update_profile(self, email: str, profile: dict) -> None:
         """Update just the profile portion of a user record."""

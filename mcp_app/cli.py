@@ -49,8 +49,8 @@ def _resolve_signing_key(key: str | None, app_name: str | None = None) -> str:
 
 
 def _client(url: str | None, signing_key: str | None, app_name: str | None = None):
-    from mcp_app.admin_client import AdminClient
-    return AdminClient(
+    from mcp_app.admin_client import RemoteAuthAdapter
+    return RemoteAuthAdapter(
         _resolve_url(url, app_name),
         _resolve_signing_key(signing_key, app_name),
     )
@@ -208,9 +208,9 @@ def setup(url, signing_key):
 @click.option("--signing-key", default=None)
 def health(url, signing_key):
     """Check health of a deployed instance."""
-    from mcp_app.admin_client import AdminClient
+    from mcp_app.admin_client import RemoteAuthAdapter
     resolved_url = _resolve_url(url)
-    client = AdminClient(resolved_url, "unused")
+    client = RemoteAuthAdapter(resolved_url, "unused")
     result = _run(client.health_check())
     click.echo(f"{result['status']} ({result['status_code']})")
 
@@ -350,11 +350,34 @@ def create_mcp_cli(app_name: str) -> click.Group:
     return cli
 
 
+def _get_auth_store(app_name: str):
+    """Get the auth store based on connect config — local or remote."""
+    cfg = _load_setup(app_name)
+    if not cfg:
+        raise click.ClickException(
+            f"Not configured. Run:\n"
+            f"  {app_name}-admin connect local\n"
+            f"  {app_name}-admin connect <url> --signing-key xxx"
+        )
+    if cfg.get("mode") == "local":
+        from mcp_app.data_store import FileSystemUserDataStore
+        from mcp_app.bridge import DataStoreAuthAdapter
+        return DataStoreAuthAdapter(FileSystemUserDataStore(app_name=app_name))
+    else:
+        from mcp_app.admin_client import RemoteAuthAdapter
+        return RemoteAuthAdapter(
+            _resolve_url(None, app_name),
+            _resolve_signing_key(None, app_name),
+        )
+
+
 def create_admin_cli(app_name: str) -> click.Group:
     """Create the admin CLI for an app (connect, users, tokens, health).
 
     Dynamically generates typed CLI flags from the registered profile
     model (if expand=True) or accepts --profile for object input.
+    All user operations go through UserAuthStore — local or remote
+    determined by connect config.
 
     Usage in app's __init__.py:
         admin_cli = create_admin_cli("my-app")
@@ -396,17 +419,16 @@ def create_admin_cli(app_name: str) -> click.Group:
     @cli.command()
     def health():
         """Check health of the configured instance."""
-        from mcp_app.admin_client import AdminClient
         cfg = _load_setup(app_name)
         if cfg.get("mode") == "local":
             click.echo("Local mode — no remote health check.")
             return
-        if not cfg.get("url"):
-            raise click.ClickException(
-                f"Not configured. Run: {app_name}-admin connect <url> --signing-key xxx"
-            )
-        client = AdminClient(cfg["url"], "unused")
-        result = _run(client.health_check())
+        from mcp_app.admin_client import RemoteAuthAdapter
+        adapter = RemoteAuthAdapter(
+            _resolve_url(None, app_name),
+            _resolve_signing_key(None, app_name),
+        )
+        result = _run(adapter.health_check())
         click.echo(f"{result['status']} ({result['status_code']})")
 
     # Users group
@@ -418,28 +440,14 @@ def create_admin_cli(app_name: str) -> click.Group:
     @users.command("list")
     def users_list():
         """List registered users."""
-        cfg = _load_setup(app_name)
-        if not cfg:
-            raise click.ClickException(
-                f"Not configured. Run: {app_name}-admin connect local"
-            )
-        if cfg.get("mode") == "local":
-            from mcp_app.data_store import FileSystemUserDataStore
-            store = FileSystemUserDataStore(app_name=app_name)
-            user_list = store.list_users()
-            if not user_list:
-                click.echo("No users.")
-                return
-            for u in user_list:
-                click.echo(f"  {u}")
-        else:
-            result = _run(_client(None, None, app_name).list_users())
-            if not result:
-                click.echo("No users.")
-                return
-            for user in result:
-                status = " (revoked)" if user.get("revoke_after") else ""
-                click.echo(f"  {user['email']}{status}")
+        store = _get_auth_store(app_name)
+        result = _run(store.list())
+        if not result:
+            click.echo("No users.")
+            return
+        for user in result:
+            status = " (revoked)" if user.revoke_after else ""
+            click.echo(f"  {user.email}{status}")
 
     # Build users add dynamically from profile model
     model = get_profile_model()
@@ -470,12 +478,10 @@ def create_admin_cli(app_name: str) -> click.Group:
     @click.pass_context
     def users_add(ctx, **kwargs):
         """Register a user."""
+        from datetime import datetime, timezone
+        from mcp_app.models import UserAuthRecord
+
         email = kwargs.pop("email")
-        cfg = _load_setup(app_name)
-        if not cfg:
-            raise click.ClickException(
-                f"Not configured. Run: {app_name}-admin connect local"
-            )
 
         # Resolve profile
         profile = None
@@ -488,43 +494,22 @@ def create_admin_cli(app_name: str) -> click.Group:
             if profile:
                 profile = _validate_profile(profile)
 
-        if cfg.get("mode") == "local":
-            from datetime import datetime, timezone
-            from mcp_app.data_store import FileSystemUserDataStore
-            from mcp_app.bridge import DataStoreAuthAdapter
-            from mcp_app.models import UserAuthRecord
-
-            store = FileSystemUserDataStore(app_name=app_name)
-            adapter = DataStoreAuthAdapter(store)
-            _run(adapter.save(
-                UserAuthRecord(email=email, created=datetime.now(timezone.utc)),
-                profile=profile,
-            ))
-            click.echo(f"Added locally: {email}")
-        else:
-            result = _run(_client(None, None, app_name).register_user(email, profile))
-            click.echo(f"Registered: {result['email']}")
+        store = _get_auth_store(app_name)
+        result = _run(store.save(
+            UserAuthRecord(email=email, created=datetime.now(timezone.utc)),
+            profile=profile,
+        ))
+        click.echo(f"Added: {result['email']}")
+        if "token" in result:
             click.echo(f"Token: {result['token']}")
 
     @users.command("revoke")
     @click.argument("email")
     def users_revoke(email):
         """Revoke a user's access."""
-        cfg = _load_setup(app_name)
-        if not cfg:
-            raise click.ClickException(
-                f"Not configured. Run: {app_name}-admin connect local"
-            )
-        if cfg.get("mode") == "local":
-            from mcp_app.data_store import FileSystemUserDataStore
-            from mcp_app.bridge import DataStoreAuthAdapter
-            store = FileSystemUserDataStore(app_name=app_name)
-            adapter = DataStoreAuthAdapter(store)
-            _run(adapter.delete(email))
-            click.echo(f"Revoked locally: {email}")
-        else:
-            result = _run(_client(None, None, app_name).revoke_user(email))
-            click.echo(f"Revoked: {result['revoked']}")
+        store = _get_auth_store(app_name)
+        _run(store.delete(email))
+        click.echo(f"Revoked: {email}")
 
     # Tokens
     @cli.group()
@@ -537,15 +522,16 @@ def create_admin_cli(app_name: str) -> click.Group:
     def tokens_create(email):
         """Create a new token for an existing user."""
         cfg = _load_setup(app_name)
-        if not cfg:
-            raise click.ClickException(
-                f"Not configured. Run: {app_name}-admin connect <url>"
-            )
         if cfg.get("mode") == "local":
             click.echo("Tokens are for remote instances only.")
-        else:
-            result = _run(_client(None, None, app_name).create_token(email))
-            click.echo(f"Token for {result['email']}: {result['token']}")
+            return
+        from mcp_app.admin_client import RemoteAuthAdapter
+        adapter = RemoteAuthAdapter(
+            _resolve_url(None, app_name),
+            _resolve_signing_key(None, app_name),
+        )
+        result = _run(adapter.create_token(email))
+        click.echo(f"Token for {result['email']}: {result['token']}")
 
     return cli
 

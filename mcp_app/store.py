@@ -1,27 +1,34 @@
-"""UserAuthStore protocol — the contract auth uses to manage users."""
+"""UserAuthStore protocol — the contract auth and admin use to manage users."""
 
 from typing import Protocol
-from mcp_app.models import UserAuthRecord
+from mcp_app.models import UserAuthRecord, UserRecord
 
 
 class UserAuthStore(Protocol):
-    """Interface for auth user management.
+    """Interface for user management.
 
-    Solutions implement this against their own storage — filesystem,
-    database, Firestore, etc. The auth framework calls these methods
-    for token verification, user registration, listing, and revocation.
+    Two implementations:
+    - DataStoreAuthAdapter: local, wraps any UserDataStore
+    - RemoteAuthAdapter: remote, wraps HTTP admin API
+
+    The CLI and admin tools call these methods without knowing
+    which backend is in use.
     """
 
     async def get(self, email: str) -> UserAuthRecord | None:
         """Get auth record for a user. Returns None if not found."""
         ...
 
+    async def get_full(self, email: str) -> UserRecord | None:
+        """Get full user record including profile."""
+        ...
+
     async def list(self) -> list[UserAuthRecord]:
         """List all users with auth records."""
         ...
 
-    async def save(self, record: UserAuthRecord) -> None:
-        """Create or update a user's auth record."""
+    async def save(self, record: UserAuthRecord, profile: dict | None = None) -> dict:
+        """Create or update a user. Returns result dict (may include token)."""
         ...
 
     async def delete(self, email: str) -> None:

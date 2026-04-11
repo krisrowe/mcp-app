@@ -1,7 +1,7 @@
-"""REST client for managing deployed mcp-app instances.
+"""Remote auth adapter — implements UserAuthStore over HTTP.
 
-Stateless — accepts a base URL and signing key, mints admin JWTs,
-and calls the /admin REST endpoints. Used by both CLI and MCP tools.
+Connects to a deployed mcp-app instance's /admin REST endpoints.
+Mints admin JWTs locally using the signing key.
 """
 
 from datetime import datetime, timezone, timedelta
@@ -9,9 +9,11 @@ from datetime import datetime, timezone, timedelta
 import httpx
 import jwt as pyjwt
 
+from mcp_app.models import UserAuthRecord, UserRecord
 
-class AdminClient:
-    """Client for a deployed mcp-app instance's admin API."""
+
+class RemoteAuthAdapter:
+    """UserAuthStore implementation backed by a remote mcp-app instance."""
 
     def __init__(self, base_url: str, signing_key: str,
                  http_client: httpx.AsyncClient | None = None):
@@ -20,7 +22,6 @@ class AdminClient:
         self._http = http_client or httpx.AsyncClient()
 
     def _admin_token(self) -> str:
-        """Mint a short-lived admin JWT."""
         now = datetime.now(timezone.utc)
         payload = {
             "sub": "admin",
@@ -34,32 +35,39 @@ class AdminClient:
         return {"Authorization": f"Bearer {self._admin_token()}"}
 
     async def health_check(self) -> dict:
-        """Check if the instance is reachable and healthy."""
         resp = await self._http.get(f"{self.base_url}/health", timeout=10)
         return {"status": "healthy", "status_code": resp.status_code}
 
-    async def list_users(self) -> list[dict]:
-        """List all registered users."""
+    async def get(self, email: str) -> UserAuthRecord | None:
+        users = await self.list()
+        for u in users:
+            if u.email == email:
+                return u
+        return None
+
+    async def get_full(self, email: str) -> UserRecord | None:
+        record = await self.get(email)
+        if not record:
+            return None
+        return UserRecord(
+            email=record.email,
+            created=record.created,
+            revoke_after=record.revoke_after,
+        )
+
+    async def list(self) -> list[UserAuthRecord]:
         resp = await self._http.get(
             f"{self.base_url}/admin/users",
             headers=self._headers(),
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()
+        return [UserAuthRecord(**u) for u in resp.json()]
 
-    async def register_user(self, email: str, credential=None) -> dict:
-        """Register a user and return their token.
-
-        Args:
-            email: User's email address.
-            credential: Optional data saved under the user's "credential"
-                key in the data store. mcp-app does not interpret it —
-                the SDK decides what it means.
-        """
-        body = {"email": email}
-        if credential is not None:
-            body["credential"] = credential
+    async def save(self, record: UserAuthRecord, profile: dict | None = None) -> dict:
+        body = {"email": record.email}
+        if profile is not None:
+            body["profile"] = profile
         resp = await self._http.post(
             f"{self.base_url}/admin/users",
             headers=self._headers(),
@@ -69,22 +77,19 @@ class AdminClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def delete(self, email: str) -> None:
+        resp = await self._http.delete(
+            f"{self.base_url}/admin/users/{email}",
+            headers=self._headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+
     async def create_token(self, email: str) -> dict:
-        """Create a new token for an existing user."""
         resp = await self._http.post(
             f"{self.base_url}/admin/tokens",
             headers=self._headers(),
             json={"email": email},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def revoke_user(self, email: str) -> dict:
-        """Revoke a user's access."""
-        resp = await self._http.delete(
-            f"{self.base_url}/admin/users/{email}",
-            headers=self._headers(),
             timeout=10,
         )
         resp.raise_for_status()
