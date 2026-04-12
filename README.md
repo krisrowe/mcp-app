@@ -434,6 +434,7 @@ tools:
 curl -X POST https://your-service/ \
   -H "Authorization: Bearer USER_TOKEN" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
 ```
 
