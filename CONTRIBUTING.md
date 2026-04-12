@@ -533,13 +533,27 @@ it. Both are loaded in one store read at auth time.
 gapp deploys containers to Cloud Run. It doesn't know about mcp-app's
 internals. mcp-app doesn't know about gapp. Neither imports the other.
 
-gapp config for how to run the app:
-- `service.cmd: my-app-mcp serve` — for mcp-app solutions
-- `service.entrypoint: my_app.mcp.server:app` — for raw FastMCP/uvicorn
+### Skill and documentation decoupling
 
-See the deployment matrix in README.md for all deployment options
-(bare metal, Docker, gcloud --source, gapp) with both mcp-app and
-FastMCP.
+The `author-mcp-app` skill guides agents through building apps on
+this framework. It must remain agnostic to deployment tools. It
+may mention a deployment tool (e.g., gapp) parenthetically as one
+option among several, but must never contain deployment-tool-specific
+configuration, commands, or workflows. The skill describes the
+app's runtime contract — what it needs from any environment — and
+leaves the deployment tool's skill to handle the rest.
+
+The same rule applies to README.md and all other documentation:
+never make mcp-app docs intimately aware of any specific
+deployment tool's internals. At most, a passing reference as an
+example. Universal tools like Docker are the exception — Docker
+examples serve both practical and illustrative purposes and don't
+create coupling to a specific deployment platform.
+
+The agent is expected to carry context between skills — it reads
+the app's runtime requirements from the mcp-app skill, then reads
+the deployment tool's skill, and maps one to the other. Neither
+skill needs to know about the other's details.
 
 ### app-user (archived)
 

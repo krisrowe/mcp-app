@@ -65,19 +65,48 @@ Wire up in `__init__.py`:
 
 ```python
 # my_app/__init__.py
-from mcp_app.cli import create_mcp_cli, create_admin_cli
+from mcp_app import App
+from my_app.mcp import tools
 
-mcp_cli = create_mcp_cli("my-app")
-admin_cli = create_admin_cli("my-app")
+app = App(name="my-app", tools_module=tools)
 ```
+
+For API-proxy apps with per-user credentials:
+
+```python
+# my_app/__init__.py
+from pydantic import BaseModel
+from mcp_app import App
+from my_app.mcp import tools
+
+class Profile(BaseModel):
+    token: str
+
+app = App(
+    name="my-app",
+    tools_module=tools,
+    profile_model=Profile,
+    profile_expand=True,
+)
+```
+
+`profile_expand=True` generates typed CLI flags (`--token`) on
+the admin CLI. `profile_expand=False` (default) accepts profile
+as JSON or `@file`.
 
 Add entry points to `pyproject.toml`:
 
 ```toml
 [project.scripts]
-my-app-mcp = "my_app:mcp_cli"
-my-app-admin = "my_app:admin_cli"
+my-app-mcp = "my_app:app.mcp_cli"
+my-app-admin = "my_app:app.admin_cli"
+
+[project.entry-points."mcp_app.apps"]
+my-app = "my_app:app"
 ```
+
+The `mcp_app.apps` entry point lets the test suite and tooling
+discover your app automatically.
 
 Run:
 
@@ -93,7 +122,7 @@ and store wiring are handled by the framework from the Python args.
 
 Default store is filesystem — per-user directories under
 `~/.local/share/{name}/users/`. Override with `APP_USERS_PATH`
-env var. Custom store backends can be passed to `create_mcp_cli`.
+env var. Custom store backends can be passed to `App`.
 
 ### Middleware
 
@@ -150,12 +179,40 @@ The `tools` module is imported and all public async functions (not starting with
 
 ## Environment Variables
 
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `SIGNING_KEY` | For HTTP | none — required | JWT signing key. Must be set for HTTP mode. |
-| `JWT_AUD` | No | None (skip) | Token audience validation |
+| Variable | Required | If Missing | Purpose |
+|----------|----------|------------|---------|
+| `SIGNING_KEY` | For HTTP | Startup fails | JWT signing key |
+| `JWT_AUD` | No | Audience not validated | Expected JWT `aud` claim |
 | `APP_USERS_PATH` | No | `~/.local/share/{name}/users/` | Per-user data directory |
-| `TOKEN_DURATION_SECONDS` | No | 315360000 (~10yr) | Default token lifetime |
+| `TOKEN_DURATION_SECONDS` | No | 315360000 (~10yr) | Token lifetime in seconds |
+
+**`SIGNING_KEY`** is a secret. Never commit it to the repo. Generate
+a strong random value:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+How it gets into the environment depends on your deployment: CI/CD
+secrets (e.g., GitHub Actions), cloud secret managers (e.g., GCP
+Secret Manager), or deployment tools that generate and manage
+secrets directly.
+
+**`JWT_AUD`** — if unset, audience is not validated. Apps sharing the
+same signing key without distinct `JWT_AUD` values will accept each
+other's user tokens. If each app has a unique signing key, audience
+validation is less critical.
+
+**`APP_USERS_PATH`** — the default writes to the local filesystem,
+which works for development. In a container, this path is ephemeral
+— the app starts, users get registered, tools execute, and then
+user data is silently lost on container restart. No error, no
+warning. For any persistent deployment, set `APP_USERS_PATH` to a
+mounted volume or persistent storage path.
+
+**`TOKEN_DURATION_SECONDS`** — the default (~10 years) effectively
+means tokens are permanent. Set a shorter value if tokens should
+expire. Applies to newly issued tokens only.
 
 ## User Identity and Profile
 
@@ -248,20 +305,74 @@ httpx is already a dependency of mcp-app.
 
 See CONTRIBUTING.md for full test examples.
 
+## Running the Server
+
+### stdio (local, single user)
+
+No auth, no signing key, no server process. The MCP client launches
+the process directly:
+
+```bash
+my-app-mcp stdio --user local
+```
+
+`--user` is required — it specifies which user record to load from
+the store. Refuses to start without it.
+
+### HTTP (multi-user)
+
+```bash
+SIGNING_KEY=your-key my-app-mcp serve
+```
+
+With persistent storage and all options:
+
+```bash
+SIGNING_KEY=your-key \
+APP_USERS_PATH=/data/my-app/users \
+JWT_AUD=my-app \
+TOKEN_DURATION_SECONDS=2592000 \
+  my-app-mcp serve --host 0.0.0.0 --port 8080
+```
+
+Runs uvicorn on `0.0.0.0:8080` by default. Override with `--host`
+and `--port`.
+
 ## Deployment
 
-mcp-app is a standard Python app. Deploy it however you deploy Python.
+mcp-app is a standard Python app. Deploy it however you deploy
+Python — as a process, in a container, on any platform. The app
+does not know or care how it was deployed.
 
-### Bare metal (no container)
+### Runtime contract
+
+Any deployment environment must provide:
+
+- **Start command:** `my-app-mcp serve` (optionally `--host` /
+  `--port`, default `0.0.0.0:8080`)
+- **`SIGNING_KEY` env var** — required for HTTP. A secret — must
+  not be committed to the repo or hardcoded in config files.
+  Source it from a secrets store, CI/CD secrets, or have the
+  deployment tool generate it (see Environment Variables above)
+- **`APP_USERS_PATH` env var** — must point to persistent storage
+  for any durable deployment. The default writes to the local
+  filesystem, which is ephemeral in containers (see Environment
+  Variables above)
+- **Health check:** `GET /health` — no auth, returns
+  `{"status": "ok"}`
+- **Auth model:** mcp-app handles its own auth via JWT. If the
+  platform has an auth gate (IAM, API gateway, etc.), configure
+  it to allow unauthenticated traffic through to the app
+- **Build root:** the repo root where `pyproject.toml` lives
+
+### Bare metal
 
 ```bash
 pip install -e .
 SIGNING_KEY=your-key my-app-mcp serve
 ```
 
-For development or simple VPS deployments. Runs uvicorn on port 8080.
-
-### Docker (any container platform)
+### Docker
 
 ```dockerfile
 FROM python:3.11-slim
@@ -273,137 +384,165 @@ CMD ["my-app-mcp", "serve"]
 ```
 
 ```bash
-# Build and run locally
 docker build -t my-app .
-docker run -p 8080:8080 -e SIGNING_KEY=your-key my-app
+docker run -p 8080:8080 \
+  -e SIGNING_KEY=your-key \
+  -v /persistent/path:/data \
+  -e APP_USERS_PATH=/data/users \
+  my-app
 ```
 
-This Dockerfile works on any platform that runs containers.
+The Dockerfile works on any container platform. The volume mount
+ensures user data survives container restarts.
 
-### Google Cloud Run (source deploy — no Docker needed)
+### Cloud platforms
+
+Deploy from source or a container image using your platform's
+tooling. Set `SIGNING_KEY` via the platform's secret manager and
+`APP_USERS_PATH` to a persistent volume. Ensure the platform
+allows unauthenticated HTTP traffic through to the app.
+
+Deployment tools like [gapp](https://github.com/echomodel/gapp)
+can automate infrastructure, secrets, and container builds.
+
+### Post-deploy verification
+
+**1. Liveness** — confirm the process is up:
+```bash
+curl https://your-service/health
+# {"status": "ok"}
+```
+
+**2. Admin auth** — confirm admin JWT works and the store is
+connected:
+```bash
+my-app-admin connect https://your-service --signing-key xxx
+my-app-admin users list
+```
+
+**3. Register a user** and get their token:
+```bash
+my-app-admin users add alice@example.com
+# Returns: {"email": "alice@example.com", "token": "..."}
+```
+
+**4. User auth** — confirm user JWT works end-to-end by calling
+`tools/list`. This goes through user JWT middleware (not admin),
+loads the user record from the store, and returns registered
+tools:
+```bash
+curl -X POST https://your-service/ \
+  -H "Authorization: Bearer USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+```
+
+If this returns the tool list, user auth works, the store loaded
+the user record, and tools are wired. The app is fully operational.
+
+## User Management
+
+### Setup
 
 ```bash
-gcloud run deploy my-app \
-  --source . \
-  --allow-unauthenticated \
-  --set-env-vars SIGNING_KEY=your-key
+# Local (filesystem store on this machine)
+my-app-admin connect local
+
+# Remote (deployed instance)
+my-app-admin connect https://your-service --signing-key xxx
 ```
 
-Builds in the cloud. No local Docker install required. If a Dockerfile
-exists it uses it; otherwise Google Cloud Buildpacks detect the Python app.
+All subsequent commands route automatically based on the
+connection mode.
 
-### gapp (fastest path to Cloud Run)
-
-[gapp](https://github.com/echomodel/gapp) handles Dockerfile generation,
-secrets, and data volumes:
-
-```yaml
-# gapp.yaml
-public: true
-env:
-  - name: SIGNING_KEY
-    secret:
-      generate: true
-  - name: APP_USERS_PATH
-    value: "{{SOLUTION_DATA_PATH}}/users"
-```
+### Managing users
 
 ```bash
-gapp deploy
+# Register users
+my-app-admin users add alice@example.com
+my-app-admin users add bob@example.com --profile '{"token": "api-key-xxx"}'
+
+# List users
+my-app-admin users list
+
+# Revoke a user (invalidates all their tokens)
+my-app-admin users revoke alice@example.com
+
+# Issue a new token for an existing user
+my-app-admin tokens create alice@example.com
+
+# Health check (remote only)
+my-app-admin health
 ```
 
-No Dockerfile to write.
+The token returned from `users add` or `tokens create` is what
+the user puts in their MCP client configuration.
 
-gapp config options:
-- `service.entrypoint` — ASGI module:app path, wrapped with uvicorn
-- `service.cmd` — raw command (e.g., `my-app-mcp serve`)
+## MCP Client Configuration
 
-### FastMCP without mcp-app
+### stdio (local)
 
-If using FastMCP directly, the same deployment options
-work. The Dockerfile CMD and gapp config differ:
+No signing key needed — stdio has no JWT auth.
 
-```dockerfile
-# Dockerfile for FastMCP
-CMD ["uvicorn", "my_app.mcp.server:app", "--host", "0.0.0.0", "--port", "8080"]
-```
-
-```yaml
-# gapp.yaml for FastMCP
-service:
-  entrypoint: my_app.mcp.server:app
-```
-
-```bash
-# Bare metal for FastMCP
-uvicorn my_app.mcp.server:app --host 0.0.0.0 --port 8080
-```
-
-### Deployment matrix
-
-| | Bare metal | Docker | gcloud --source | gapp |
-|---|---|---|---|---|
-| **mcp-app** | `my-app-mcp serve` | `CMD ["my-app-mcp", "serve"]` | needs Dockerfile | `service.cmd` |
-| **FastMCP** | `uvicorn module:app` | `CMD ["uvicorn", "..."]` | needs Dockerfile | `service.entrypoint` |
-
-mcp-app doesn't know about gapp. gapp doesn't know about mcp-app's internals.
-Deploy anywhere — the framework serves an ASGI app on a port.
-
-### MCP Client Configuration
-
-#### CLI-based registration
-
-**Claude Code (stdio — local):**
+**CLI registration:**
 ```bash
 claude mcp add my-app -- my-app-mcp stdio --user local
-```
-
-**Claude Code (HTTP — remote):**
-```bash
-claude mcp add --transport http my-app \
-  https://your-service.run.app/ \
-  --header "Authorization: Bearer YOUR_TOKEN"
-```
-
-**Gemini CLI (stdio — local):**
-```bash
 gemini mcp add my-app -- my-app-mcp stdio --user local
 ```
 
-#### Manual configuration (JSON)
-
-**Claude Code / Gemini CLI (remote):**
-
-Add to `~/.claude.json` or `~/.gemini/settings.json`:
-
+**Manual config** (`~/.claude.json` or `~/.gemini/settings.json`):
 ```json
 {
   "mcpServers": {
     "my-app": {
-      "url": "https://your-service.run.app/",
+      "command": "my-app-mcp",
+      "args": ["stdio", "--user", "local"]
+    }
+  }
+}
+```
+
+### HTTP (remote)
+
+**CLI registration:**
+```bash
+claude mcp add --transport http my-app \
+  https://your-service/ \
+  --header "Authorization: Bearer USER_TOKEN"
+```
+
+**Manual config** (`~/.claude.json` or `~/.gemini/settings.json`):
+```json
+{
+  "mcpServers": {
+    "my-app": {
+      "url": "https://your-service/",
       "headers": {
-        "Authorization": "Bearer YOUR_TOKEN"
+        "Authorization": "Bearer ${MY_APP_TOKEN}"
       }
     }
   }
 }
 ```
 
-**Claude.ai / Claude mobile / Claude Code (remote via URL):**
+Both Claude Code and Gemini CLI support `${VAR}` expansion in
+config files — reference a host environment variable instead of
+pasting the token directly.
+
+**Claude.ai / Claude mobile (remote via URL):**
 ```
-https://your-service.run.app/?token=YOUR_TOKEN
+https://your-service/?token=USER_TOKEN
 ```
 
-Remote MCP servers added through Claude.ai are available across all
-Claude clients — web, mobile app, and Claude Code — without separate
-configuration for each.
+Remote MCP servers added through Claude.ai are available across
+all Claude clients — web, mobile, and Claude Code.
 
 ## Architecture
 
 mcp-app wraps [FastMCP](https://github.com/modelcontextprotocol/python-sdk) (the official MCP Python SDK) and [Starlette](https://www.starlette.io/) (ASGI framework). Solutions never import these directly — mcp-app handles all wiring.
 
 ```
-create_mcp_cli("my-app", tools_module=tools)
+App(name="my-app", tools_module=tools)
     → discovers async functions in tools module
     → registers each as FastMCP tool (with identity enforcement)
     → creates data store from app name
@@ -416,11 +555,43 @@ create_mcp_cli("my-app", tools_module=tools)
 mcp-app ships reusable test modules that check auth, user admin,
 JWT enforcement, CLI wiring, and tool protocol compliance against
 your specific app. Import them in two files, provide your `App`
-object as a fixture, and get 25+ tests for free. See
-[docs/app-development.md](docs/app-development.md) for setup.
+object as a fixture, and get 25+ tests for free.
+
+### 1. Create `tests/framework/conftest.py`
+
+```python
+import pytest
+from my_app import app
+
+@pytest.fixture(scope="session")
+def app():
+    return app
+```
+
+### 2. Create `tests/framework/test_framework.py`
+
+```python
+from mcp_app.testing.iam import *
+from mcp_app.testing.wiring import *
+from mcp_app.testing.tools import *
+from mcp_app.testing.health import *
+```
+
+This file is identical across all mcp-app solutions. The
+`conftest.py` is the only file that changes — it points the
+tests at your specific `App` object.
+
+### 3. Run
+
+```bash
+pytest tests/
+```
+
+Zero failures means: auth works, admin works, tools are wired,
+identity is enforced, and the SDK has test coverage for every
+tool. Your app is correctly built on mcp-app.
 
 ## Further Reading
 
-- [docs/app-development.md](docs/app-development.md) — CLI factories, entry points, user management workflow, profile registration
 - [docs/custom-middleware.md](docs/custom-middleware.md) — advanced middleware configuration
 - [CONTRIBUTING.md](CONTRIBUTING.md) — architecture, design decisions, testing
