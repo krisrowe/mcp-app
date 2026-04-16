@@ -538,15 +538,17 @@ def create_admin_cli(app_name: str) -> click.Group:
     else:
         @users.command("update-profile")
         @click.argument("email")
-        @click.option("--profile", "profile_str", required=True,
-                      help="Profile fields to update as JSON string or @file.")
-        def users_update_profile(email, profile_str):
-            """Merge profile fields for an existing user."""
+        @click.argument("data")
+        def users_update_profile(email, data):
+            """Merge profile fields for an existing user.
+
+            DATA is a JSON string or @file with fields to merge.
+            """
             store = _get_auth_store(app_name)
             existing = _run(store.get(email))
             if not existing:
                 raise click.ClickException(f"User not found: {email}")
-            updates = _parse_profile_value(profile_str)
+            updates = _parse_profile_value(data)
             if model:
                 updates = _validate_profile(updates)
             _run(store.update_profile(email, updates))

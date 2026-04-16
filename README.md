@@ -75,12 +75,12 @@ For API-proxy apps with per-user credentials:
 
 ```python
 # my_app/__init__.py
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from mcp_app import App
 from my_app.mcp import tools
 
 class Profile(BaseModel):
-    token: str
+    token: str = Field(description="API token from https://example.com/settings")
 
 app = App(
     name="my-app",
@@ -93,6 +93,15 @@ app = App(
 `profile_expand=True` generates typed CLI flags (`--token`) on
 the admin CLI. `profile_expand=False` (default) accepts profile
 as JSON or `@file`.
+
+The `Field(description=...)` is important — it appears in `--help`
+output for both `users add` and `users update-profile`. An operator
+or agent managing a deployed instance discovers what credentials the
+app needs by running `my-app-admin users add --help`. The
+description should say what the credential is, where to get it,
+and what system it connects to. The field name itself
+(`token`, `api_key`, `github_pat`, etc.) is the app author's
+choice — mcp-app does not enforce or assume any naming convention.
 
 Add entry points to `pyproject.toml`:
 
@@ -237,30 +246,48 @@ user.profile     # dict or typed Pydantic model — whatever was saved at regist
 
 The user record includes an optional `profile` field — app-specific data saved at registration time (backend credentials, preferences, config). mcp-app stores it and loads it but does not interpret it.
 
-For typed profile access, the app registers a Pydantic model:
+For typed profile access, the app declares a Pydantic model on
+the `App` object:
 
 ```python
 # my_app/__init__.py
-from pydantic import BaseModel
-from mcp_app.context import register_profile
+from pydantic import BaseModel, Field
+from mcp_app import App
+from my_app.mcp import tools
 
 class Profile(BaseModel):
-    token: str
+    token: str = Field(description="Personal access token from https://example.com/settings")
 
-register_profile(Profile)
+app = App(name="my-app", tools_module=tools, profile_model=Profile, profile_expand=True)
 ```
 
-Now `user.profile.token` is typed and validated. If no model is registered, `user.profile` is a raw dict.
+Now `user.profile.token` is typed and validated. If no model is
+registered, `user.profile` is a raw dict.
+
+**Field descriptions are how the app tells operators (and agents)
+what credentials it needs.** When `profile_expand=True`, the admin
+CLI generates typed flags from the model — the field name becomes
+the flag, the description becomes the help text. An operator
+running `my-app-admin users add --help` sees exactly what to
+provide and where to get it, without reading the source code.
+This is the re-discovery mechanism: months later, when a token
+needs rotating, the CLI tells you what each field is for.
 
 ### User registration with profile
 
 ```bash
 # Data-owning app — no profile needed
-mcp-app users add alice@example.com
+my-app-admin users add alice@example.com
 
-# API-proxy app — profile contains backend credential
-mcp-app users add alice@example.com --profile '{"token": "api-key-xxx"}'
+# API-proxy app — profile set at registration via typed flags
+my-app-admin users add alice@example.com --token api-key-xxx
+
+# Update a single profile field later (e.g., rotate a credential)
+my-app-admin users update-profile alice@example.com token new-api-key
 ```
+
+`users add` rejects existing users — use `users update-profile`
+to change credentials for a user that's already registered.
 
 ### stdio identity
 
