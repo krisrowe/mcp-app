@@ -371,6 +371,74 @@ mcp-app is a standard Python app. Deploy it however you deploy
 Python — as a process, in a container, on any platform. The app
 does not know or care how it was deployed.
 
+**This posture is inherited.** Apps built on mcp-app are
+deployment-agnostic by default. When authoring your app's own
+README, describe what the app needs from any environment — env
+vars, start command, endpoint paths, auth model — and let the
+reader's deployment tooling map to it. Docker is a useful
+universal illustration; specific platforms (Cloud Run, ECS,
+Kubernetes) should only appear in your docs if the app is
+deliberately coupled to one. Concrete values tied to a
+deployment (signing-key secret names, `APP_USERS_PATH` paths,
+orchestration details) belong in the deployment tooling's
+domain, not the app's README. This is how the same app can be
+picked up and deployed anywhere without its docs arguing with
+the operator's choice.
+
+### Where deployment config lives under the agnostic route
+
+When the app is deployment-agnostic, the deployment decisions
+and configuration live *separately* from the app repo — in
+CI/CD workflows, ops repos, infrastructure-as-code modules, or
+wherever environment-specific (but non-secret) settings, build
+scripts, and deployment tooling belong. The app repo stays
+focused on the app. Operators bring their own deployment
+tooling, and agentic workflows operating on a deployment
+environment will typically have additional skills or plugins
+loaded for *that* tooling, separate from the app itself.
+
+Some of the connective tissue is retained across sessions by
+the mcp-app admin CLI. Per-app `connect` config persists the
+deployed URL and signing-key access for each app, so returning
+to administer an app months later doesn't require
+re-discovering how or where it was deployed. This state lives
+in XDG config paths (`~/.config/{app-name}/setup.json`) —
+always outside the solution app repo — where it can be managed
+and versioned by a dotfile manager or lifted into a separate,
+private operator-owned repo if durability beyond the
+workstation is needed. Either way, it stays external to the
+solution app repo. Capabilities here may expand over time —
+additional metadata about a deployment (environments, aliases,
+deployment tool hints) could reasonably accrue to this per-app
+config, still in external locations not versioned with or
+exposed in the repo itself as a reusable product.
+
+### The opinionated-tooling alternative
+
+A secondary route — not required by mcp-app — is to ship
+opinionated build and deployment tooling *inside* the app repo:
+Dockerfiles beyond a minimal illustration, CI workflow
+templates, Terraform modules (`.tf` files) or other
+infrastructure-as-code, platform-specific manifests, or configs
+for a particular deployment tool. Done well, this tooling is
+still
+*operator-agnostic*: environment specifics (project IDs,
+secret names, domains) and secrets stay out of the repo; the
+configs describe how to build and deploy without dictating
+where. The goal is to give operators an easy, opinionated path
+— batteries included rather than assembly required.
+
+This route trades some portability for convenience. Apps
+published as **reusable public products** commonly avoid it,
+or include only a minimal Docker example, to maximize audience
+and adoption — any in-repo tooling assumption is one more thing
+a would-be user has to agree with or work around. Apps that
+are **internal, personal, or have a narrower audience** may
+reasonably include more opinionated tooling, on the theory that
+the authors and operators are closely aligned and the
+convenience is worth it. Both are valid — the choice is the
+author's.
+
 ### Runtime contract
 
 Any deployment environment must provide:
@@ -653,6 +721,113 @@ pytest tests/
 Zero failures means: auth works, admin works, tools are wired,
 identity is enforced, and the SDK has test coverage for every
 tool. Your app is correctly built on mcp-app.
+
+## Skill installation and usage
+
+Two agent skills ship with this repo under `skills/`:
+
+- **`author-mcp-app`** — guides authoring, migration, review,
+  and framework-upgrade work on mcp-app solutions.
+- **`mcp-app-admin`** — guides operators and agents managing
+  deployed mcp-app instances (connect, verify, users, tokens,
+  MCP client registration).
+
+### Installing the skills
+
+Install as symlinks from a local clone so edits in the repo
+go live immediately:
+
+```bash
+# Claude Code — user scope
+ln -s $(pwd)/skills/author-mcp-app  ~/.claude/skills/author-mcp-app
+ln -s $(pwd)/skills/mcp-app-admin   ~/.claude/skills/mcp-app-admin
+
+# Gemini CLI — link from local clone
+gemini skills link ./skills/author-mcp-app
+gemini skills link ./skills/mcp-app-admin
+```
+
+Install method may vary by agent platform; follow the
+established pattern in your environment.
+
+### When to invoke
+
+**`author-mcp-app`** is for lifecycle events on a solution
+repo, not for steady-state work:
+
+- **Initial authoring** of a new mcp-app solution (greenfield).
+- **Periodic review** of an existing solution against the
+  current framework — produces a compliance dashboard.
+- **Framework upgrades** or migrations to adopt new features
+  or replace deprecated patterns.
+
+**`mcp-app-admin`** is for operational work on a deployed
+instance — connecting the admin CLI, verifying the
+deployment, managing users, rotating credentials, registering
+MCP clients. Invoke it alongside whatever deployment-tool
+skill (if any) is in use.
+
+### Design goal: self-obsolescence for the solution repo
+
+The processes these skills describe — authoring, reviewing,
+upgrading, deploying, redeploying, administering — are all
+inherently recurring. The admin process in particular runs
+continuously across the lifetime of a deployed app
+(redeploys, user additions, credential rotations, client
+registrations). That work never becomes obsolete.
+
+What *can* become obsolete, per solution repo, are the
+**skills as agent-guidance artifacts**. `author-mcp-app` is
+designed — when `mcp-app-admin` and any other relevant
+accelerator skills are available in the environment at
+authoring time — to absorb their guidance into the solution
+repo's own `README.md`, `CONTRIBUTING.md`, and agent context
+files (`CLAUDE.md`, `.gemini/settings.json`) in app-specific
+and often more concrete terms than the skills themselves can
+offer. The solution repo's docs end up carrying the complete
+end-to-end process — authoring AND operating — expressed in
+the app's real CLI names, real profile fields, real
+deployment posture.
+
+Once the author skill has completed that pass, a future
+agent opening the solution repo with **neither skill loaded**
+must be able to install, run, deploy, redeploy, connect the
+admin CLI, manage users, rotate credentials, register MCP
+clients, add or modify tools, and run tests, entirely from
+the repo's own files. Neither skill is needed for ongoing
+work on that specific repo.
+
+The skills remain broadly useful:
+
+- **`author-mcp-app`** — for lifecycle events on any repo
+  (initial authoring, periodic review, framework upgrade),
+  or on repos that haven't been brought under this discipline
+  yet.
+- **`mcp-app-admin`** — for operational work on instances
+  whose repos don't have the admin journey fully documented
+  (legacy apps, third-party apps, or any solution that
+  skipped the author skill's pass), and as a cross-cutting
+  reference that tracks framework evolution before any one
+  repo's docs catch up.
+
+The bar the author skill holds itself to: if it ran on this
+repo successfully, neither skill should be required the next
+time someone (human or agent) opens the repo to do normal
+work on it.
+
+### A note on deployment scope
+
+`author-mcp-app` today has only loose handoff mechanics for
+deployment: it describes what the app needs from any
+environment (the runtime contract) and leaves concrete
+deployment to whatever tooling the user has paired with it.
+As the framework grows, `author-mcp-app` may gain the ability
+to agnostically trigger externally-configured build and
+deploy workflows — coordinating the "app is ready" → "app is
+deployed and reachable" handoff without owning the concrete
+environment configs, which continue to live outside the
+solution repo. Until then, that handoff lives in whatever
+deployment skill or tool the user pairs with the author skill.
 
 ## Further Reading
 

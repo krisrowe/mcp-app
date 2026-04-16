@@ -18,6 +18,48 @@ and deploying solutions. This skill picks up where deployment ends.
 The hand-off point is: the app is deployed and running, the
 operator needs to connect, verify, and manage it.
 
+## Where this skill fits — user journey map
+
+Every mcp-app solution supports six recurring journeys across
+three audiences (developer, operator, end user). The
+`author-mcp-app` skill enumerates the full map. This skill owns
+journeys 4–6:
+
+- **Journey 4: Connect admin CLI post-deploy** — retrieve the
+  signing key, point the admin CLI at the deployed instance
+  (or the local store), persist the per-app config.
+- **Journey 5: Manage users and credentials** — add, list,
+  revoke, issue tokens, rotate profile fields
+  (`users update-profile`).
+- **Journey 6: Verify end-to-end and register MCP clients** —
+  `probe` for liveness + MCP round-trip, `register` to emit
+  Claude Code, Gemini CLI, and Claude.ai URL-form commands.
+
+Journeys 1–3 (install, run locally, deploy) are outside this
+skill's scope — refer the user or agent to the app's own
+README, the `author-mcp-app` skill, or their deployment tool's
+skill as appropriate.
+
+### Audiences
+
+- **Deploying operator** — just finished a deploy, needs to
+  connect, verify, and register the first user.
+- **Returning operator** — coming back months later to rotate
+  a credential, add a user, or investigate an issue. May not
+  remember how the app was deployed. Should be able to
+  reconstruct the operational state from the app's own docs
+  and the per-app admin CLI config.
+- **Agent-operator** — an AI agent performing admin operations
+  on behalf of a human. Relies on structured output
+  (`--json`), deterministic commands, and self-documenting
+  CLI help (profile field descriptions).
+
+The returning operator is the most frequently neglected
+audience and the one this skill most explicitly serves. If a
+workflow requires the operator to remember something not
+captured in the app's docs or the admin CLI's persistent
+config, flag it as a gap.
+
 ## Before You Start
 
 **At the start of any session involving admin operations**, check

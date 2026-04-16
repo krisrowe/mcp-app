@@ -23,23 +23,168 @@ rather than the app).
 "free tests for auth and admin" or just reference the subsystem
 package name directly.
 
-### Every mcp-app change must be reviewed against the skill
+### Every mcp-app change must be reviewed against both skills
 
-The `author-mcp-app` skill (currently in echoskill, planned to
-move into this repo per echomodel/echomodel#46) is the primary
-guide agents and developers use to build, migrate, and review
-apps on this framework. Any change to mcp-app — new features,
-API changes, behavioral changes, new configuration, new testing
-patterns — must be accompanied by a review of the skill to ensure
-it captures the change. If the skill doesn't reflect the current
-framework, agents will build apps wrong.
+This repo ships two skills under `skills/`:
+
+- **`author-mcp-app`** — the primary guide agents and developers
+  use to build, migrate, and review apps on this framework.
+- **`mcp-app-admin`** — the guide for operators and agents
+  managing deployed mcp-app solutions (connect, verify, users,
+  tokens, MCP client registration).
+
+Any change to mcp-app — new features, API changes, behavioral
+changes, new configuration, new testing patterns, new CLI
+commands, changed admin endpoints — must be accompanied by a
+review of both skills to ensure they capture the change. If
+the skills don't reflect the current framework, agents will
+build or operate apps wrong.
 
 This includes changes to: the `App` class, `mcp_app.testing`
 modules, CLI factories, bootstrap, middleware, store protocol,
 identity enforcement, admin endpoints, entry point conventions,
 and deployment patterns. If it affects how an implementer
-integrates, configures, tests, or deploys — the skill must be
-updated.
+integrates, configures, tests, deploys, or operates — the
+relevant skill(s) must be updated in the same change.
+
+The skills are part of the product. Changes to mcp-app that
+don't update the skills should be treated as incomplete — the
+skills are what agents use to build correctly and operate
+safely on the framework.
+
+## Documentation hygiene
+
+mcp-app's documentation lives in three tiers. Each tier has a
+specific audience and a non-negotiable self-sufficiency rule.
+Maintaining these tiers correctly across changes is how the
+framework stays usable without an agent having every piece of
+context loaded.
+
+### The three tiers
+
+**1. Framework docs (this repo)** — `README.md` and
+`CONTRIBUTING.md`. Audience: framework users (app authors),
+operators of mcp-app solutions, and framework contributors.
+The README covers: what mcp-app is, quick start, env vars,
+identity and profiles, admin endpoints, testing, running,
+deployment, user management, MCP client configuration,
+architecture. CONTRIBUTING covers: terminology, architectural
+decisions, skill maintenance (this file), testing patterns,
+and dependencies.
+
+**2. Skills (this repo, `skills/`)** — `author-mcp-app` and
+`mcp-app-admin`. Audience: agents (Claude Code, Gemini CLI,
+any agentskills.io-compatible environment) working with
+implementing apps. These are installed into an agent's skill
+directory, typically as symlinks back to this repo. They
+operate in *other* repos (the implementing app's repo) and
+therefore **must not assume the framework README or
+CONTRIBUTING is loaded into the agent's context**. Every piece
+of information a skill needs to act correctly must be in the
+skill itself.
+
+**3. Implementing app docs (external repos)** — every app
+built on mcp-app has its own `README.md` and `CONTRIBUTING.md`.
+Audience: users installing the app, operators running and
+managing it, and contributors modifying it. **Implementing
+app docs must be self-sufficient without any mcp-app skill
+loaded** — a reader arriving cold must be able to install,
+configure, run, deploy, verify, administer, and contribute.
+Skills are an optional accelerant referenced in a footer at
+most, never a prerequisite.
+
+### Maintenance rules
+
+**Deployment-agnostic default posture is maintained across all
+three tiers.** The framework README, the `author-mcp-app`
+skill, and implementing app docs all default to describing a
+runtime contract rather than prescribing a deployment target.
+The three-part framing (agnostic default / where deployment
+config actually lives / opinionated-tooling alternative) lives
+in the framework README and must be mirrored in the
+`author-mcp-app` skill. If one drifts, the other will too.
+
+**skill-author guidelines govern skill frontmatter and
+cross-references.** Both skills must comply with the
+agentskills.io-based `skill-author` guidelines: imperative
+"Use when..." descriptions with synonym coverage, no
+disqualifying platform language in the description, pure
+instructions (no bundled scripts), and hint-level cross-skill
+references (never dependencies). The two skills in this repo
+are co-packaged and may reference each other, but references
+to external skills (e.g., `setup-agent-context`) must be
+hint-level with self-contained fallback content inline.
+
+**Skills must be self-contained.** When adding content to a
+skill that sits alongside content in the README, do not write
+"see the README for details" — the agent won't have it.
+Duplicate the essential content into the skill. The README can
+stay the authoritative source for framework contributors; the
+skill is the authoritative source for agents authoring or
+operating apps elsewhere.
+
+### Known duplications
+
+Because tiers 1 and 2 serve overlapping audiences from
+different contexts, some duplication is intentional and must
+be kept in sync on every change:
+
+| Content | Framework README | `author-mcp-app` | `mcp-app-admin` |
+|---------|-----------------|-----------------|----------------|
+| Runtime contract (env vars, endpoints, start command) | Full | Full | Referenced |
+| Environment variables table | Full | Full | Referenced |
+| User management CLI commands | Full | Full | Full |
+| Post-deploy verification (probe, register) | Summary | Summary | Full |
+| Signing-key retrieval | Summary | Pointer | Full |
+| Deployment-agnostic posture | Full | Full | Implicit |
+| Six-journey map | Not present | Full | Journeys 4–6 |
+| Admin endpoint list | Full | Referenced | Referenced |
+
+"Full" = authoritative source for that audience. "Summary" =
+compressed for context but complete enough to act. "Pointer" =
+brief mention directing to where the authoritative content
+lives (only works when co-packaged, e.g., framework README ↔
+same-repo skill — never across agent contexts).
+
+When changing anything in the "Full" cells, update all
+"Full" instances across tiers in the same commit. "Summary"
+and "Pointer" instances may be revised to match but don't
+generally need to track every edit.
+
+### Single-sourced where feasible
+
+Not everything duplicates. These live in exactly one place:
+
+- **Architectural decisions and rationale** — CONTRIBUTING.md
+  only. Skills reference outcomes ("signing key has no
+  default"), not the decision history.
+- **Conformance suite internals** — CONTRIBUTING.md only.
+  Skills teach how to adopt the suite, not how it's built.
+- **Framework contributor workflow** (running tests, releasing,
+  version bumps) — CONTRIBUTING.md only. Agents authoring
+  apps don't need this.
+- **Skill-author guidelines** — a separate cross-cutting skill
+  (`skill-author`). Neither of this repo's skills duplicates
+  those rules; they inherit them.
+
+### Every change touches the docs layer
+
+When reviewing a PR to mcp-app, ask:
+
+1. Does this change affect how app authors integrate, configure,
+   test, or deploy? → `author-mcp-app` skill must be updated.
+2. Does this change affect how operators connect, verify, or
+   manage a deployed instance? → `mcp-app-admin` skill must be
+   updated.
+3. Does this change alter the runtime contract, env vars,
+   endpoints, or admin API? → Framework README must be updated,
+   and both skills reviewed for the same changes.
+4. Does this change introduce or remove a known duplication?
+   → Update the table above.
+
+The skills are symlinked into agent skill directories in
+development setups, so edits land live — there's no reason to
+defer a skill update to "after the code change merges."
 
 ### The test suite is the acceptance criteria
 

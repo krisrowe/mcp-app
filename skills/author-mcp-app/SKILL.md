@@ -14,6 +14,122 @@ web APIs that are self-contained, deployable apps. Solutions built
 with this guidance work locally (stdio, single user) and deployed
 (HTTP, multi-user) without code changes.
 
+## User Journey Map
+
+Every mcp-app solution is used by three audiences across six
+recurring journeys. Understanding the map serves two purposes
+for this skill:
+
+1. **Authoring context.** When building or reviewing an app,
+   every journey below must work end-to-end. Missing journeys
+   (e.g., no `probe`, no typed profile flags, no post-deploy
+   signing-key retrieval path) are compliance gaps.
+2. **Documentation coverage.** The implementing app's README
+   and CONTRIBUTING must walk readers through each journey in
+   app-specific terms (see the Documentation section). The
+   journeys below are what the docs must cover.
+
+### Audiences
+
+- **Developer** — builds or modifies the app; needs architecture,
+  tests, compliance, and local validation.
+- **Operator** — deploys the app, manages users, rotates
+  credentials. May be the developer wearing a different hat, or
+  a separate person months later.
+- **End user** — registers the app with their MCP client and
+  invokes tools. May be a human or an AI agent.
+
+### The six journeys
+
+1. **Install / quick start** — developer clones or installs
+   the package, runs tests, confirms it works locally.
+2. **Run locally (stdio)** — end user registers the app for
+   stdio with their MCP client. May require a local user
+   profile with credentials (API-proxy apps).
+3. **Deploy (HTTP)** — operator deploys the app to a target
+   platform with persistent storage and a secret-managed
+   signing key.
+4. **Connect admin CLI post-deploy** — operator retrieves the
+   signing key from wherever the deployment stored it, then
+   runs `my-app-admin connect <url> --signing-key xxx`.
+   Config persists per-app in `~/.config/{name}/setup.json`.
+5. **Manage users and credentials** — operator adds users,
+   rotates backend credentials via `users update-profile`,
+   revokes access, issues new tokens. Profile field names and
+   descriptions drive CLI help text.
+6. **Verify end-to-end and register MCP clients** — operator
+   runs `probe` to confirm the deployment serves tools,
+   `register` to emit MCP client configuration commands
+   (Claude Code, Gemini CLI, Claude.ai URL).
+
+The developer typically walks all six during initial release;
+the operator returns to journeys 4–6 for every credential
+rotation, user addition, or deployment update. Docs must make
+the returning operator's path frictionless — they land cold,
+months later, without the skills loaded.
+
+## Design goal: self-obsolescence for the solution repo
+
+The processes this skill and its companion `mcp-app-admin`
+describe — authoring, reviewing, upgrading, deploying,
+redeploying, administering — are all inherently recurring.
+Nothing about those processes becomes obsolete. What *can*
+become obsolete, per solution repo, are the **skills as
+agent-guidance artifacts**.
+
+This skill holds itself to the following bar: when
+`mcp-app-admin` (and any other relevant accelerator skills)
+are available in the environment during an authoring or
+review pass, this skill must absorb their guidance into the
+solution repo's own `README.md`, `CONTRIBUTING.md`, and agent
+context files (`CLAUDE.md`, `.gemini/settings.json`) — in
+app-specific and often more concrete terms than the skills
+themselves can offer. After the pass, a future agent opening
+the solution repo with **neither skill loaded** must be able
+to install, run, deploy, redeploy, connect the admin CLI,
+manage users, rotate credentials, register MCP clients, add
+or modify tools, and run tests, entirely from the repo's own
+files.
+
+The skills remain broadly useful — for lifecycle events
+(initial authoring, review, framework upgrade), for repos
+that haven't been brought under this discipline yet, and as
+cross-cutting references that track framework evolution
+before any one repo's docs catch up. But for *this* repo,
+after *this* pass, they should not be required for normal
+ongoing work.
+
+### Final self-obsolescence check
+
+Before exiting any Mode 1 (greenfield) or Mode 2 (migration)
+workflow, verify the bar:
+
+1. Open the solution repo's `README.md` and read it cold.
+   Does it walk through all six user journeys in
+   app-specific terms, with real CLI names, real profile
+   fields, real commands, real env vars? No references to
+   "run the author-mcp-app skill" or "see mcp-app-admin"?
+2. Open `CONTRIBUTING.md`. Does it teach how to add a tool,
+   how to add or modify a profile field, how to run tests,
+   and how to satisfy mcp-app compliance rules — without
+   pointing a reader back to either skill?
+3. Confirm `CLAUDE.md` imports `@README.md` and
+   `@CONTRIBUTING.md`, and that `.gemini/settings.json`
+   declares both in `context.fileName`.
+4. Mentally simulate three representative tasks with an
+   agent that has neither skill loaded:
+   - Add a tool that calls a new SDK method
+   - Rotate a deployed user's backend credential
+   - Redeploy a code change and verify the running instance
+   Can the agent complete each task using only the repo's
+   own docs? If not, identify the gap and fill it in the
+   repo's docs — not in conversation, not by relying on
+   the skill.
+
+The skill's pass is not finished until the check passes.
+Skill-level content that hasn't made it into the repo's own
+docs in app-specific form is an uncompleted handoff.
+
 ## Framework Choice
 
 This skill supports two approaches:
@@ -126,8 +242,9 @@ Both follow the same repo structure.
 
 1. Check the mcp-app framework version (see below)
 2. Read the existing codebase to understand current structure.
-   **If deployment config exists** (e.g., `gapp.yaml`,
-   Dockerfile, CI config) — do not modify it directly. When
+   **If deployment config exists** (e.g., Dockerfile, CI
+   workflows, `.tf` files, deployment-tool configs) — do not
+   modify it directly. When
    you reach deployment configuration, invoke the appropriate
    deployment skill if one is available. The runtime contract
    in this skill tells you what the app needs; the deployment
@@ -262,7 +379,9 @@ may depend on newer framework features.
 
 ### Deployment Readiness
 - [ ] Deployable as a standard container image
-- [ ] Optionally, `gapp.yaml` for rapid Cloud Run deployment
+- [ ] Optionally, opinionated deployment tooling in-repo if
+      the app is deliberately committed to one (see the
+      opinionated-tooling alternative)
 - [ ] `SIGNING_KEY` set as environment variable (no default)
 
 ## Repository Structure
@@ -1120,11 +1239,427 @@ venv/
 
 ## Documentation
 
-### README.md
-Covers: why the repo exists, quick start, deployment, CLI, config.
+The implementing app's README.md and CONTRIBUTING.md must be
+self-sufficient. A user, operator, or agent landing on the repo
+should be able to install, configure, run, deploy, verify,
+administer, and contribute without having the `author-mcp-app`
+or `mcp-app-admin` skills loaded and without being told to
+install them. Assume the reader has none of the framework's
+context in their head.
 
-### CONTRIBUTING.md
-Covers: architecture, testing, conventions, how to add features.
+This is non-negotiable. The skills accelerate authoring and
+operation when available, but an app whose docs only work when
+paired with the skills is a broken app — most readers (human or
+agent) will arrive without them.
+
+### Default posture: deployment-agnostic, like mcp-app itself
+
+mcp-app describes a runtime contract — env vars, start command,
+endpoint paths, health and admin APIs — and leaves the
+deployment tool or environment to map to it. Apps built on
+mcp-app inherit that posture by default. The framework has
+already given authors everything they need to stay
+deployment-agnostic: an env-var-driven runtime, no hardcoded
+paths, no platform-specific code, a standard Python package
+that deploys wherever Python deploys.
+
+In **greenfield authoring**, assume the user wants this. Docs
+describe what the app needs from any environment. Show Docker
+as a universal illustrative example if one is needed, but do
+not prescribe a platform, a secret store, or a concrete path.
+This lets the app be picked up and deployed by whoever needs
+it without the docs arguing with their choice.
+
+In **migrations and reviews**, check in-repo precedent before
+assuming the default. If the repo has already committed to a
+specific platform — platform-specific configs checked in,
+deployment commands in the README, CI workflows that only
+target one environment — the user may have deliberately coupled
+the app to that platform. Don't force a refactor. Offer to
+factor out the coupling if context suggests that's the user's
+goal, or if they haven't considered the tradeoff, frame the
+opportunity: "this app is currently coupled to X; making it
+platform-agnostic would let anyone deploy it anywhere. Want to
+refactor, or keep the coupling intentional?"
+
+A user who is committed to a concrete platform expression —
+because their org only uses one, because the app is meant for
+a specific environment, because the coupling simplifies
+something they care about — is making a valid choice. The
+skill's job is to articulate the tradeoff, not overrule it.
+
+### Where deployment config lives under the agnostic route
+
+When an app stays deployment-agnostic, deployment decisions
+and configuration live *separately* from the app repo — in
+CI/CD workflows, ops repos, infrastructure-as-code modules,
+or wherever environment-specific (but non-secret) settings,
+build scripts, and deployment tooling belong. Help the user
+see that the app repo stays focused on the app; their
+deployment choices live wherever they normally manage that
+concern. Agentic workflows operating on the deployment
+environment will typically have additional skills or plugins
+loaded for the deployment tooling, separate from this skill
+and from the app itself.
+
+Connective tissue between sessions is retained by the mcp-app
+admin CLI's per-app `connect` config — URL + signing-key
+access persisted under XDG config paths
+(`~/.config/{app-name}/setup.json`), always outside the
+solution app repo. That state can be managed and versioned by
+a dotfile manager or lifted into a separate, private
+operator-owned repo if durability beyond a single workstation
+is needed. Either way, it stays external to the solution app
+repo. When reviewing or authoring, never suggest persisting
+deployment metadata inside the solution app repo just because
+it might be convenient — that's how reusable products get
+their portability quietly stolen.
+
+### The opinionated-tooling alternative — when and when not
+
+A secondary route is to ship opinionated build and deployment
+tooling *inside* the app repo: Dockerfiles beyond a minimal
+illustration, CI workflow templates, Terraform modules
+(`.tf` files) or other infrastructure-as-code, platform-specific
+manifests, or configs for a particular deployment tool. Done
+well, this tooling remains *operator-agnostic* — environment
+specifics (project IDs, secret names, domains) and secrets
+stay out of the repo; the configs describe how to build and
+deploy without dictating where.
+
+When to suggest or accept this route:
+
+- The app is **internal, personal, or has a narrow audience**
+  where authors and operators are closely aligned and the
+  convenience outweighs the portability loss
+- The user explicitly wants an opinionated path for themselves
+  or a small team
+- An in-repo precedent already exists and the user wants to
+  extend it
+
+When to push back or recommend against it:
+
+- The app is being published as a **reusable public product**
+  aimed at broad adoption — every in-repo tooling assumption
+  is one more thing a would-be user has to agree with or work
+  around
+- The user hasn't considered the tradeoff and the repo's goal
+  implies broad reuse (public visibility, generic naming,
+  "framework"/"library"/"solution" framing)
+
+When in doubt, frame the tradeoff plainly: in-repo opinionated
+tooling is a convenience for aligned operators and a tax on
+everyone else. Public reusable products usually skip it or
+keep only a minimal Docker example. Private/internal apps may
+reasonably include more.
+
+### What the app's docs must cover — the six user journeys
+
+The User Journey Map section above enumerates the six journeys
+every mcp-app solution supports. The implementing app's docs
+must walk readers through each journey in app-specific terms —
+substituting the app's real CLI names, profile fields, env var
+values, and deployment target. This skill is the source for
+what each journey requires; the preceding sections (User
+Identity and Profile, Environment variables, User management,
+Deployment, Post-deploy) are the raw material to distill from.
+
+**1. Understand the app (README opener — why it exists)**
+
+One paragraph: what problem does this app solve, and who is it
+for. Name the backend system if it's an API-proxy (e.g., "wraps
+the Example.com API"). Name the data domain if it's data-owning
+(e.g., "tracks daily food logs"). Be concrete — an agent reading
+this must be able to decide in three sentences whether the tool
+is what it needs. Defer "how" to later sections.
+
+**2. Install and run locally (stdio journey)**
+
+For users who want to run the tool on their own machine:
+
+- How to `pipx install` (or `pip install`) the app
+- How to register with MCP clients for stdio
+  (`claude mcp add`, `gemini mcp add`, full command)
+- Whether stdio mode needs per-user credentials and how to
+  provide them (if the app has a profile model, describe
+  how to set profile data for the `local` user — typically
+  via `my-app-admin connect local` then `users add local`
+  or `users update-profile local`)
+- Smoke-test command or example tool invocation
+
+If the app is HTTP-only (no stdio), say so at the top of this
+section and point to the remote journey instead.
+
+**3. Deploy (HTTP journey for operators)**
+
+The runtime contract, scoped to this app. Default is
+deployment-agnostic — describe what the app needs from any
+environment and let the reader's deployment tooling map to it:
+
+- Required env vars the app reads
+  (`SIGNING_KEY` always; `APP_USERS_PATH` pointing to
+  persistent storage; any app-specific env vars for data,
+  config, or cache paths). Name the variables and what they
+  mean. Don't prescribe concrete values that only make sense
+  in one environment.
+- Start command (`my-app-mcp serve`, optional
+  `--host`/`--port`)
+- Endpoint path (`/`, not `/mcp`), health path
+  (`/health`), admin path (`/admin`)
+- Auth model: the app handles its own JWT auth; the
+  platform must allow unauthenticated HTTP through to the
+  app
+- Docker as the universal illustrative example if one is
+  helpful — a standard multi-stage Dockerfile reaches every
+  container platform. Don't pick a specific cloud, secret
+  manager, or orchestrator unless the repo has deliberately
+  committed to one.
+
+If in-repo precedent shows the user has committed to a
+specific platform (platform-specific configs checked in,
+deployment tool already wired up, CI targeting one
+environment), document that concretely — this is the user's
+choice and the docs should match. If the repo shows no such
+commitment, stay agnostic and let the reader's environment
+drive.
+
+If the app's deployment is commonly paired with a specific
+tool that has its own skill (e.g., gapp), mention the tool
+by name and link to it, but don't assume the reader has
+that skill loaded — link to the tool's own README or walk
+through the manual steps.
+
+**4. Connect the admin CLI (operator journey — post-deploy)**
+
+This is the section most frequently neglected and most
+valuable. A reader returning to the app months later to rotate
+a token must be able to re-discover the admin workflow from
+this section alone:
+
+- `my-app-admin connect local` vs
+  `my-app-admin connect <url> --signing-key xxx`
+- How to retrieve the signing key — describe the mechanism,
+  not a location. "The signing key is wherever your
+  deployment put `SIGNING_KEY` — trace it back through your
+  deployment tooling (cloud secret manager, CI secret store,
+  deployment tool's secret command, etc.)." Name a concrete
+  retrieval path only if the repo has committed to a
+  specific deployment.
+- What "local" means for this app and when to use it
+- The fact that `connect` persists config in
+  `~/.config/{app-name}/setup.json` — subsequent admin
+  commands don't repeat `--url` or `--signing-key`
+- A reminder that `connect` and deploy are independent —
+  deploying doesn't auto-connect the admin CLI
+
+**5. Manage users and credentials (admin journey)**
+
+Concrete commands for this app's profile shape:
+
+- `users add` with this app's actual profile flags
+  (`--token`, `--api-key`, whatever the Pydantic model
+  declares). Show a real-looking invocation.
+- How to discover profile fields from the CLI itself
+  (`users add --help`) — this is the self-documentation
+  path for agents operating the app
+- `users update-profile` to rotate a specific credential
+  without re-registering
+- `users list`, `users revoke`, `tokens create`
+- Where to obtain the backend credential for this app's
+  profile fields (the URL users visit to generate an API
+  token, the OAuth flow, etc.). This belongs in the docs
+  AND in the `Field(description=...)` on the profile
+  model. Both exist for different audiences — CLI help
+  for operators mid-task, README for operators onboarding.
+
+**6. Verify end-to-end and register MCP clients**
+
+- `my-app-admin probe` — what it checks and what good
+  output looks like
+- `my-app-admin register --user <email>` — generates
+  ready-to-paste commands for Claude Code, Gemini CLI,
+  Claude.ai URL form
+- Manual MCP client config as fallback (claude/gemini
+  `mcp add` commands with HTTP transport, header-based
+  auth, the `${VAR}` env expansion pattern that both
+  clients support for keeping tokens out of config files)
+
+### Principles for distilling, not copying
+
+**App-specific over generic for things the app owns.**
+Framework-level prose uses placeholders like `my-app-admin`
+and `do_thing`. The implementing app's README uses the real
+CLI name, real tool names, real profile field names. Substitute
+throughout so every command is copy-pasteable verbatim. This is
+always correct — it costs nothing and the app owns these names
+regardless of where it's deployed.
+
+**Agnostic over concrete for things the deployment owns.** The
+app doesn't own `APP_USERS_PATH`'s value, secret storage
+location, the platform, or orchestration details. Those are
+environment concerns. Describe what the app needs from the
+environment — not a prescribed value — unless the repo has
+deliberately committed to a specific platform. "Set
+`APP_USERS_PATH` to persistent storage" is the app's language;
+"set it to `/data/my-app/users` mounted from a Cloud Run
+volume" is the deployment's language, which only belongs in
+the README if the app is explicitly coupled to that deployment.
+
+**This app's shape, not the framework's shape.** If the app has
+no profile model (data-owning), don't document profile flags or
+profile update commands — they're irrelevant. If the app is
+stdio-only, don't document HTTP deployment. Show only the
+journeys that apply.
+
+**Match the mcp-app framework, don't extend it.** Don't document
+env vars, endpoint paths, admin commands, or behaviors the
+framework doesn't actually provide. If the app needs something
+extra (a custom env var, an app-specific CLI subcommand),
+document it as an app-level addition, distinct from framework
+behavior. When the framework changes, only the framework-level
+paragraphs need updating across the fleet.
+
+**No references to skills as prerequisites.** Never write "see
+the author-mcp-app skill" or "run /mcp-app-admin" as the primary
+instruction for any step. The skills are an accelerant, not a
+prerequisite. A pointer to them belongs in a footer section
+(see below), and even then only as an optional optimization.
+
+**No "why we chose mcp-app" explanations.** The framework
+justifies itself in its own README. The implementing app's
+README is about using THIS app, not marketing the framework.
+Mention the framework once in passing ("built on
+[mcp-app](https://github.com/echomodel/mcp-app)") and move on.
+
+**No bridges, no legacy callouts.** Don't document "we used to
+do X, now we do Y" unless there's an active migration the
+reader needs to navigate. Coherent product, not history exposé.
+
+### README.md structure — recommended skeleton
+
+```markdown
+# my-app
+
+<one-paragraph: what it does, who it's for>
+
+## Install
+
+<pipx or pip install commands, any system prereqs>
+
+## Run locally (stdio)
+
+<claude mcp add / gemini mcp add commands>
+<profile setup for the local user if applicable>
+
+## Deploy
+
+<env var table — SIGNING_KEY, APP_USERS_PATH, app-specific>
+<runtime contract: start command, ports, endpoint paths,
+ auth model>
+<Docker example as universal illustration — or, if the repo
+ is deliberately platform-coupled, the concrete deployment
+ route for that platform>
+<post-deploy: connect admin CLI, how to trace the signing
+ key back through whatever deployment tooling was used>
+
+## Manage users
+
+<users add with this app's actual flags>
+<users update-profile, users list, users revoke, tokens create>
+<where to obtain backend credentials if API-proxy>
+
+## Verify and register MCP clients
+
+<probe>
+<register command output with real-looking URLs>
+<manual MCP client config as fallback>
+
+## Configuration
+
+<env var reference table>
+<XDG paths this app uses>
+
+## Further Reading
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — architecture, testing, development
+- Built on [mcp-app](https://github.com/echomodel/mcp-app)
+
+## For agents: optional skill accelerants
+
+If you're a coding agent with plugin support, the
+[author-mcp-app](...) and [mcp-app-admin](...) skills provide
+step-by-step workflows for authoring and operating apps on
+this framework. They are optional — this README is
+self-sufficient.
+```
+
+The footer skill mention is the only place skills appear. It's
+a footnote, not a dependency.
+
+### CONTRIBUTING.md — architecture and maintenance
+
+Covers what a contributor needs to change the app without
+breaking compliance:
+
+- Three-layer architecture (SDK / MCP / optional CLI) and
+  the rule that business logic lives in the SDK
+- Profile model location and the requirement that every
+  profile field include `Field(description=...)` — this is
+  the re-discovery mechanism for operators
+- How to add an MCP tool (add an async function to the
+  tools module — no decorators, no registration)
+- How to add a profile field (update the Pydantic model,
+  update `Field(description=...)`, update README's user
+  management section, add or extend tests that cover
+  profile handling)
+- How to run the test suites — SDK unit tests and the
+  mcp-app framework test suite (`pytest tests/framework/`)
+- Environment variable conventions and how to add
+  app-specific XDG paths
+- Where deployment configuration lives and what owns it
+  (the deployment tool vs. the app)
+- Any app-specific design decisions that future
+  contributors need to know (stored profile fields,
+  refresh behavior, custom middleware if any)
+
+Do not repeat the README. CONTRIBUTING is for contributors;
+README is for users and operators. A link from CONTRIBUTING
+back to README for "how users interact with this app" is
+fine — duplication isn't.
+
+### Patterns observed across existing mcp-app solutions
+
+Use these as a reference when drafting — they're conventions
+that have emerged across multiple apps built on this framework:
+
+- **One-paragraph opener** that names the backend system
+  (for API-proxy) or the data domain (for data-owning) in
+  the first sentence. Skip preamble.
+- **Env var table early** — a single table of every env
+  var the app reads, with `Required | If Missing | Purpose`
+  columns. This is where operators land when debugging
+  startup failures.
+- **Configure/install/register as three distinct sections.**
+  Install = getting the package. Configure = env vars,
+  signing key, profile data. Register = wiring into an MCP
+  client. Conflating these confuses readers.
+- **Concrete example tool call** in the Run Locally
+  section — a literal tool invocation through an MCP
+  client or a curl against the HTTP endpoint. Gives the
+  reader confidence the thing is actually working.
+- **Post-deploy verification section** — not "how to
+  deploy" and not "how to manage users" but a distinct
+  "how to confirm the deploy worked" section featuring
+  `probe`. This is the first step a returning operator
+  takes months later.
+- **Rotating credentials as a named subsection** under
+  user management. The token-rotation path is the single
+  most-searched workflow after initial setup. Give it a
+  heading.
+- **MCP client config shown for all three clients**
+  (Claude Code, Gemini CLI, Claude.ai URL). Don't make
+  the reader figure out which subset their client
+  supports.
 
 ### Agent context files
 
@@ -1142,6 +1677,36 @@ Covers: architecture, testing, conventions, how to add features.
   }
 }
 ```
+
+These files make the README and CONTRIBUTING content
+automatically available to Claude Code and Gemini CLI when
+they operate in the repo — a user or agent working in the
+repo has the full operational context without needing to
+load any skill.
+
+### Agent context setup
+
+If the app is being onboarded for AI-assisted development for
+the first time — or if `CLAUDE.md`, `.gemini/settings.json`,
+and `.gitignore` aren't yet set up correctly — the broader
+goal is: Claude Code, Gemini CLI, and any other agent that
+opens the repo should automatically load README and
+CONTRIBUTING, not leak agent-specific scratch files into the
+repo, and share configuration that's universally useful
+across tools.
+
+The minimum:
+- `CLAUDE.md` imports `@README.md` and `@CONTRIBUTING.md`
+- `.gemini/settings.json` declares `README.md` and
+  `CONTRIBUTING.md` as context files
+- `.gitignore` ignores `.claude/` entirely and everything
+  under `.gemini/` except `settings.json`
+
+If the `setup-agent-context` skill is available in the
+environment, it automates and standardizes this across repos.
+Use it if present. If not, the minimum above is sufficient —
+the skill exists to save time, not to add capability the
+plain files lack.
 
 ## Compliance Dashboard
 
@@ -1161,7 +1726,7 @@ the framework test suite from Step 5), present the dashboard:
 | Testing | SDK unit tests pass | ✅ |
 | Testing | mcp-app test suite passes | ✅ |
 | Testing | stdio validated | ✅ |
-| Deploy | Dockerfile or gapp.yaml present | ❌ |
+| Deploy | Runtime contract documented (Docker example or equivalent) | ❌ |
 
 ✅ = conforms  ❌ = missing/wrong  ⚠️ = partial
 ```
