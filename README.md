@@ -438,39 +438,44 @@ can automate infrastructure, secrets, and container builds.
 
 ### Post-deploy verification
 
-**1. Liveness** — confirm the process is up:
-```bash
-curl https://your-service/health
-# {"status": "ok"}
-```
-
-**2. Admin auth** — confirm admin JWT works and the store is
-connected:
+**1. Connect** the admin CLI:
 ```bash
 my-app-admin connect https://your-service --signing-key xxx
-my-app-admin users list
 ```
 
-**3. Register a user** and get their token:
+**2. Register a user** (if none exist yet):
 ```bash
 my-app-admin users add alice@example.com
-# Returns: {"email": "alice@example.com", "token": "..."}
 ```
 
-**4. User auth** — confirm user JWT works end-to-end by calling
-`tools/list`. This goes through user JWT middleware (not admin),
-loads the user record from the store, and returns registered
-tools:
+**3. Probe** — single-command end-to-end verification:
 ```bash
-curl -X POST https://your-service/ \
-  -H "Authorization: Bearer USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+my-app-admin probe
 ```
 
-If this returns the tool list, user auth works, the store loaded
-the user record, and tools are wired. The app is fully operational.
+Output:
+```
+URL: https://your-service
+Health: healthy
+MCP: ok (probed as alice@example.com)
+Tools (3):
+  do_thing
+  list_items
+  get_status
+```
+
+Probe hits `/health` for liveness, then does an MCP `tools/list`
+round-trip using a short-lived token minted for an existing user.
+If it reports all tools, the app is fully operational — health,
+admin auth, user auth, MCP layer, and tool wiring all work.
+
+**4. Generate MCP client registration commands:**
+```bash
+my-app-admin register --user alice@example.com
+```
+
+This outputs ready-to-paste commands for Claude Code, Gemini
+CLI, and the Claude.ai URL form.
 
 ## User Management
 
