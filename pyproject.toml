@@ -27,3 +27,6 @@ dev = [
     "pytest-asyncio",
     "httpx",
 ]
+
+[tool.setuptools.packages.find]
+include = ["mcp_app*"]
