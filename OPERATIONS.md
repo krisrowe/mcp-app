@@ -8,10 +8,7 @@
 > when they describe behavior that exists in the current release,
 > and **(design)** for everything else.
 >
-> This document supersedes [FLEET.md](FLEET.md). Where the two
-> diverge, OPERATIONS.md is authoritative going forward. FLEET.md
-> remains as a historical design artifact until the replacement
-> is confirmed complete.
+> This document replaces the prior FLEET.md design (removed).
 
 ## Overview
 
@@ -182,10 +179,29 @@ Show is opaque — never displays where the key lives or its value.
 mcp-app show [target]
 ```
 
-Prints everything currently known about a target: provider, url,
-signing-key status (opaque), source, ref, runtime, provider config,
-vars, notes, and any named environments. Not a plan,
+Prints everything currently known about a target. Not a plan,
 not a diff — just the facts. Target optional with cwd inference.
+
+Example:
+
+```
+$ mcp-app show echofit
+
+Solution: echofit
+  Source:      echomodel/echofit @ main → a3f1c2e
+  Provider:    cloudrun
+  URL:         https://echofit-xxx.a.run.app
+  Signing key: set (sha256: 3a4f...e2c9)
+  Runtime:     mcp-app
+  Vars:        LOG_LEVEL=INFO
+  Provider config:
+    project: my-proj
+    region:  us-central1
+  Notes:       (none)
+  Envs:
+    dev  → https://echofit-dev-xxx.a.run.app
+    prod → https://echofit-prod-xxx.a.run.app
+```
 
 ### Deploy
 
@@ -920,6 +936,27 @@ Before the summary:
 Warnings are non-blocking by default. `--strict` promotes them to
 errors (CI). `--yes` skips the confirm (scripts).
 
+### Error hints on admin failures
+
+When admin ops fail (401, 403, connection refused, etc.), the CLI
+prints actionable hints pointing at the universal verbs:
+
+```
+$ mcp-app users add echofit alice@example.com
+
+Error: 401 Unauthorized from https://echofit-xxx.a.run.app/admin/users.
+The signing key was rejected by the service.
+To check or update:
+  mcp-app signing-key show echofit
+  mcp-app signing-key set echofit
+If the URL may have changed:
+  mcp-app url refresh echofit
+```
+
+Hints are provider-agnostic — same text regardless of whether the
+backend is manual, cloudrun, or anything else. The universal verbs
+handle routing to the right provider mechanism.
+
 ### CI/CD
 
 CI is an orthogonal axis to providers. Providers answer "deploy
@@ -1474,6 +1511,30 @@ the provider on subsequent calls (like a cookie). This need is
 foreseen as possible but has not formally materialized; it is
 something to keep in mind as providers are implemented.
 
+### `mcp-app-cloudrun` adapter design (separate repo)
+
+The cloudrun provider (`echomodel/mcp-app-cloudrun`) uses an
+existing deployment tool internally as its engine. Key design
+challenges for that repo (not mcp-app's concern, but documented
+here for cross-reference):
+
+- The internal engine must accept parameters externally (from
+  fleet.yaml config passed via DeployRequest), not just from its
+  own config file.
+- It must become environment-aware: each solution + env
+  combination gets its own isolated infrastructure state (project
+  resources, secret store entries, service identity).
+- The engine currently assumes one project per operator and tracks
+  its own state. Adapting it to fleet-driven multi-solution,
+  multi-env operation without losing its "never think about GCP
+  project setup" value proposition is the core design challenge.
+- Provider-specific state (project IDs, bucket names, etc.)
+  should be back-propagated into fleet.yaml as opaque config so
+  the operator doesn't have to create new GCP projects or buckets
+  manually for each new solution — the engine handles that, but
+  the identifiers need to persist somewhere fleet can pass them
+  back on subsequent deploys.
+
 ### Source resolution strategy
 
 When deploying from a repo source (not a pre-built image), how
@@ -1513,13 +1574,18 @@ This means cloud-deployed services never depend on local machine
 state for signing keys. No sync concern, no "is my local copy
 stale," no per-machine keyring setup for cloud operators.
 
-### Default provider suggestions on empty machine
+### Provider discovery and wizard suggestions
 
-When `mcp-app deploy configure` runs with no providers installed
-beyond the `manual` and `local-docker` builtins, what options does
-the wizard offer? Hardcoded list couples mcp-app to specific
-providers. Leaning on a community-maintained directory or just
-asking operator for a pip spec.
+When `mcp-app deploy configure` runs and the operator needs to
+pick a provider, the wizard must show options beyond the builtins
+(`manual`, `local-docker`). Explored approaches included a
+bundled `known_providers.yaml` data file shipped in the pip wheel
+(with local override for private providers), extras in pyproject
+for opt-in bundling, and a meta-package. None felt right — the
+discovery UX, how it integrates with pip/pipx install mechanics,
+and how it stays current without coupling mcp-app to specific
+providers were all harder to resolve than expected. Revisit during
+implementation when the concrete constraints are clearer.
 
 ## Why This Exists — Prior Art and Justification
 
@@ -1714,11 +1780,10 @@ progression driven by real pain, not reinvention for its own sake.
 
 ## Relationship to Existing Documents
 
-- **FLEET.md** (prior design): this document supersedes it.
-  FLEET.md's provider plugin model, source field semantics, and
-  fleet-registry concepts carry forward. FLEET.md's
-  fleetless-vs-fleet distinction,
-  and nested `config:` shape are revised here.
+- **FLEET.md** (removed): prior design doc. Its provider plugin
+  model, source field semantics, and fleet-registry concepts
+  carry forward into this document. Its fleetless-vs-fleet
+  distinction and nested `config:` shape were revised here.
 - **CONTRIBUTING.md**: architectural decisions remain. The
   "admin tooling rationalization" (#17), "agent-composed over
   provider-coupled" decisions, and "credentials are the SDK's
