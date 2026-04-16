@@ -48,7 +48,7 @@ def _resolve_signing_key(key: str | None, app_name: str | None = None) -> str:
     return result
 
 
-def _client(url: str | None, signing_key: str | None, app_name: str | None = None):
+def _client(url: str | None = None, signing_key: str | None = None, app_name: str | None = None):
     from mcp_app.admin_client import RemoteAuthAdapter
     return RemoteAuthAdapter(
         _resolve_url(url, app_name),
@@ -58,6 +58,29 @@ def _client(url: str | None, signing_key: str | None, app_name: str | None = Non
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _print_probe(result: dict):
+    """Render probe result as human-readable text."""
+    click.echo(f"URL: {result['url']}")
+    health = result.get("health", {})
+    click.echo(f"Health: {health.get('status', 'unknown')}")
+
+    mcp = result.get("mcp")
+    if mcp is None:
+        click.echo("MCP: not probed")
+    elif mcp.get("status") == "ok":
+        click.echo(f"MCP: ok (probed as {mcp.get('probed_as')})")
+    elif mcp.get("status") == "skipped":
+        click.echo(f"MCP: skipped — {mcp.get('reason')}")
+    else:
+        click.echo(f"MCP: {mcp.get('status')} — {mcp.get('error', '')}")
+
+    tools = result.get("tools")
+    if tools is not None:
+        click.echo(f"Tools ({len(tools)}):")
+        for t in tools:
+            click.echo(f"  {t}")
 
 
 # --- Profile helpers ---
@@ -129,12 +152,10 @@ def setup(url, signing_key):
 
 
 @main.command()
-@click.option("--url", default=None)
-@click.option("--signing-key", default=None)
-def health(url, signing_key):
+def health():
     """Check health of a deployed instance."""
     from mcp_app.admin_client import RemoteAuthAdapter
-    resolved_url = _resolve_url(url)
+    resolved_url = _resolve_url()
     client = RemoteAuthAdapter(resolved_url, "unused")
     result = _run(client.health_check())
     click.echo(f"{result['status']} ({result['status_code']})")
@@ -147,11 +168,9 @@ def users():
 
 
 @users.command("list")
-@click.option("--url", default=None)
-@click.option("--signing-key", default=None)
-def users_list(url, signing_key):
+def users_list():
     """List registered users."""
-    result = _run(_client(url, signing_key).list())
+    result = _run(_client().list())
     if not result:
         click.echo("No users.")
         return
@@ -164,9 +183,7 @@ def users_list(url, signing_key):
 @click.argument("email")
 @click.option("--profile", "profile_str", default=None,
               help="Profile data as JSON string or @file.")
-@click.option("--url", default=None)
-@click.option("--signing-key", default=None)
-def users_add(email, profile_str, url, signing_key):
+def users_add(email, profile_str):
     """Register a user and get their token."""
     from datetime import datetime, timezone
     from mcp_app.models import UserAuthRecord
@@ -176,7 +193,7 @@ def users_add(email, profile_str, url, signing_key):
         profile = _parse_profile_value(profile_str)
         profile = _validate_profile(profile)
 
-    result = _run(_client(url, signing_key).save(
+    result = _run(_client().save(
         UserAuthRecord(email=email, created=datetime.now(timezone.utc)),
         profile=profile,
     ))
@@ -187,11 +204,9 @@ def users_add(email, profile_str, url, signing_key):
 
 @users.command("revoke")
 @click.argument("email")
-@click.option("--url", default=None)
-@click.option("--signing-key", default=None)
-def users_revoke(email, url, signing_key):
+def users_revoke(email):
     """Revoke a user's access."""
-    _run(_client(url, signing_key).delete(email))
+    _run(_client().delete(email))
     click.echo(f"Revoked: {email}")
 
 
@@ -203,12 +218,55 @@ def tokens():
 
 @tokens.command("create")
 @click.argument("email")
-@click.option("--url", default=None)
-@click.option("--signing-key", default=None)
-def tokens_create(email, url, signing_key):
+def tokens_create(email):
     """Create a new token for an existing user."""
-    result = _run(_client(url, signing_key).create_token(email))
+    result = _run(_client().create_token(email))
     click.echo(f"Token for {result['email']}: {result['token']}")
+
+
+@main.command()
+@click.option("--user", default=None, help="User email for MCP probe. Auto-picks first user if omitted.")
+@click.option("--json", "as_json", is_flag=True, help="JSON output.")
+def probe(user, as_json):
+    """Probe a deployed instance: health + MCP tools round-trip."""
+    result = _run(_client().probe(user_email=user))
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+    else:
+        _print_probe(result)
+
+
+@main.command()
+@click.argument("name")
+@click.option("--user", default=None, help="Mint a fresh token for this user. Otherwise uses a placeholder.")
+@click.option("--client", "clients", multiple=True, type=click.Choice(["claude", "gemini", "claude.ai"]),
+              help="Limit to specific client(s).")
+@click.option("--scope", "scopes", multiple=True, type=click.Choice(["user", "project"]),
+              help="Limit to specific scope(s).")
+@click.option("--detect", is_flag=True, help="Check if already registered in each client.")
+@click.option("--json", "as_json", is_flag=True, help="JSON output.")
+def register(name, user, clients, scopes, detect, as_json):
+    """Generate MCP client registration commands for a deployed instance."""
+    from mcp_app.registration import generate_registrations, format_registrations
+
+    resolved_url = _resolve_url()
+    token = None
+    if user:
+        result = _run(_client().create_token(user))
+        token = result["token"]
+
+    reg = generate_registrations(
+        name=name,
+        url=resolved_url,
+        token=token,
+        clients=list(clients) or None,
+        scopes=list(scopes) or None,
+        detect_registered=detect,
+    )
+    if as_json:
+        click.echo(json.dumps(reg, indent=2))
+    else:
+        click.echo(format_registrations(reg))
 
 
 @main.command("admin-tools")
@@ -434,6 +492,64 @@ def create_admin_cli(app_name: str) -> click.Group:
         store = _get_auth_store(app_name)
         _run(store.delete(email))
         click.echo(f"Revoked: {email}")
+
+    @cli.command()
+    @click.option("--user", default=None, help="User email for MCP probe. Auto-picks first user if omitted.")
+    @click.option("--json", "as_json", is_flag=True, help="JSON output.")
+    def probe(user, as_json):
+        """Probe the configured instance: health + MCP tools round-trip."""
+        cfg = _load_setup(app_name)
+        if cfg.get("mode") == "local":
+            click.echo("Local mode — probe is for remote instances only.")
+            return
+        from mcp_app.admin_client import RemoteAuthAdapter
+        adapter = RemoteAuthAdapter(
+            _resolve_url(None, app_name),
+            _resolve_signing_key(None, app_name),
+        )
+        result = _run(adapter.probe(user_email=user))
+        if as_json:
+            click.echo(json.dumps(result, indent=2))
+        else:
+            _print_probe(result)
+
+    @cli.command()
+    @click.option("--user", default=None, help="Mint a fresh token for this user.")
+    @click.option("--client", "clients", multiple=True,
+                  type=click.Choice(["claude", "gemini", "claude.ai"]),
+                  help="Limit to specific client(s).")
+    @click.option("--scope", "scopes", multiple=True,
+                  type=click.Choice(["user", "project"]),
+                  help="Limit to specific scope(s).")
+    @click.option("--detect", is_flag=True, help="Check if already registered in each client.")
+    @click.option("--json", "as_json", is_flag=True, help="JSON output.")
+    def register(user, clients, scopes, detect, as_json):
+        """Generate MCP client registration commands for the configured instance."""
+        from mcp_app.registration import generate_registrations, format_registrations
+
+        cfg = _load_setup(app_name)
+        if cfg.get("mode") == "local":
+            click.echo("Local mode — register is for remote instances only.")
+            return
+        resolved_url = _resolve_url(None, app_name)
+        token = None
+        if user:
+            store = _get_auth_store(app_name)
+            result = _run(store.create_token(user))
+            token = result["token"]
+
+        reg = generate_registrations(
+            name=app_name,
+            url=resolved_url,
+            token=token,
+            clients=list(clients) or None,
+            scopes=list(scopes) or None,
+            detect_registered=detect,
+        )
+        if as_json:
+            click.echo(json.dumps(reg, indent=2))
+        else:
+            click.echo(format_registrations(reg))
 
     @cli.group()
     def tokens():
