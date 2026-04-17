@@ -1434,9 +1434,12 @@ section and point to the remote journey instead.
 
 **3. Deploy (HTTP journey for operators)**
 
-The runtime contract, scoped to this app. Default is
-deployment-agnostic — describe what the app needs from any
-environment and let the reader's deployment tooling map to it:
+An mcp-app HTTP solution can deploy through multiple tools in
+parallel. Documentation lists the paths the solution supports
+as peers, without elevating one over the others.
+
+Start with the runtime contract, scoped to this app — what it
+needs from any environment. This applies to every deploy path:
 
 - Required env vars the app reads
   (`SIGNING_KEY` always; `APP_USERS_PATH` pointing to
@@ -1451,19 +1454,30 @@ environment and let the reader's deployment tooling map to it:
 - Auth model: the app handles its own JWT auth; the
   platform must allow unauthenticated HTTP through to the
   app
-- Docker as the universal illustrative example if one is
-  helpful — a standard multi-stage Dockerfile reaches every
-  container platform. Don't pick a specific cloud, secret
-  manager, or orchestrator unless the repo has deliberately
-  committed to one.
+
+Then document each supported deploy path as a peer
+subsection. Common options:
+
+- `mcp-app deploy` (once a provider for the target platform
+  exists)
+- `gcloud run deploy --source .` (if a `Procfile` ships)
+- `docker build .` (if a `Dockerfile` ships)
+- Any opinionated deploy tool the author has committed to
+
+**No deploy path is canonical unless the author explicitly
+chooses one.** Every supported path gets first-class treatment
+with its own section, its own runnable commands, its own
+post-deploy verification notes. Use Docker as a universal
+illustrative example if one is helpful — a standard multi-stage
+Dockerfile reaches every container platform.
 
 If in-repo precedent shows the user has committed to a
 specific platform (platform-specific configs checked in,
 deployment tool already wired up, CI targeting one
-environment), document that concretely — this is the user's
-choice and the docs should match. If the repo shows no such
-commitment, stay agnostic and let the reader's environment
-drive.
+environment), document that concretely as the primary path —
+this is the user's choice and the docs should match. If the
+repo shows no such commitment, stay agnostic and let the
+reader's environment drive.
 
 If the app's deployment is commonly paired with a specific
 tool that has its own skill (e.g., gapp), mention the tool

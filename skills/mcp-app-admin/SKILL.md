@@ -88,8 +88,27 @@ them but only remembers the last one configured.
 ## Step 1: Retrieve the Signing Key
 
 The signing key is required for admin operations on remote
-instances. It's stored wherever the deployment process put it —
-trace it back through the deployment tooling.
+instances. Its location depends on how the solution was
+deployed:
+
+- **`mcp-app deploy` via a cloud provider** → the provider's
+  own secret-resolution mechanism (typically a cloud secret
+  manager); retrieve via `mcp-app signing-key show` or the
+  provider's surface.
+- **Bare `gcloud run deploy` with `--set-secrets=`** → stored
+  directly in Secret Manager; retrieve via `gcloud secrets
+  versions access latest --secret=...`.
+- **Any other opinionated deploy tool** → stored wherever the
+  tool puts it; consult that tool's documentation or CLI.
+- **Manual deploy (any CI, docker, systemd, etc.)** →
+  wherever the operator put it when setting up the deploy;
+  investigate the deploy configuration.
+
+For anything other than `mcp-app deploy`, the app admin CLI is
+connected manually:
+```bash
+my-solution-admin connect <url> --signing-key "$(retrieve-it-somehow)"
+```
 
 ### How to find it
 
@@ -324,6 +343,23 @@ claude mcp add --transport http my-solution \
 ```
 https://your-service/?token=USER_TOKEN
 ```
+
+## Pointing the admin CLI at a solution deployed outside mcp-app
+
+However the solution was deployed — bare `gcloud`, `docker`,
+`systemd`, a CI pipeline, anything — the admin flow is the
+same: connect the admin CLI at the URL, supply the signing
+key, and use the normal admin commands.
+
+```bash
+my-solution-admin connect https://my-service.example.com --signing-key xxx
+my-solution-admin users add alice@example.com
+my-solution-admin probe
+```
+
+The generic `mcp-app` CLI works the same way when the per-app
+admin CLI isn't installed (see below). Both interfaces hit the
+same admin REST API exposed by the running service.
 
 ## When to Use the Generic CLI
 

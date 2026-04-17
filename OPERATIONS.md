@@ -1340,6 +1340,34 @@ resources.
 13. **Operator can always leave a note.** `notes:` on any `deploy:`
     block documents context for future humans and agents.
 
+## Relationship to non-mcp-app deploy paths
+
+A solution built for mcp-app is also a standard Python web
+service. Solution authors who want their repo to deploy via
+arbitrary non-mcp-app tooling may ship optional compatibility
+artifacts:
+
+- **`Procfile`** (one line) unlocks `gcloud run deploy
+  --source .`, Heroku, Render, Fly, Railway, any Procfile-aware
+  PaaS.
+- **`Dockerfile`** unlocks local `docker build`, any container
+  platform, CI-built images.
+
+These don't conflict with the mcp-app deploy model.
+`mcp-app-cloudrun` and similar providers bring their own build
+templates and don't consult solution-repo artifacts. Solution
+authors are free to add them for ecosystem compatibility;
+operators using `mcp-app deploy` never see them.
+
+The solution is a first-class citizen of whichever deploy paths
+the author chooses to support. No path is canonical unless the
+author explicitly picks one. For operators on a deploy path
+outside `mcp-app deploy`, the `manual` provider is how the
+resulting service gets registered with mcp-app's admin layer
+(`mcp-app url set`, `mcp-app signing-key set`) — deploy with
+whatever tool, then point mcp-app at it for user and token
+management.
+
 ## Deployment Target Tradeoffs
 
 High-level comparison of the realistic options. Not prescriptive —
