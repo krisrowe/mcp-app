@@ -461,12 +461,15 @@ solutions:
 
 ### Source field forms
 
-```yaml
-source: owner/repo                              # GitHub (clone fresh)
-source: git+https://github.com/owner/repo.git   # arbitrary git remote
-source: registry.io/image:tag                   # pre-built image
-source: /absolute/path/to/source                # local path (dev)
-```
+| Form | Example | Typical consumers |
+|------|---------|-------------------|
+| GitHub shorthand | `owner/repo` | Any source-builder provider (`cloudrun`, `k8s`, `systemd`, `docker`) |
+| Git URL | `git+https://github.com/owner/repo.git` | Same as above; use for non-GitHub remotes or private forks |
+| Image reference | `registry.io/image:tag` | Providers that accept pre-built images (`cloudrun`, `k8s`, `docker`) — skips build entirely |
+| Local path | `/absolute/path/to/source` | Development; any provider that supports local checkouts |
+
+Providers declare which forms they accept. The table is guidance —
+individual cells will evolve as the provider ecosystem grows.
 
 ### Source locking
 
