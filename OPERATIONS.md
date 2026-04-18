@@ -1312,35 +1312,44 @@ resources.
    compatibility artifacts (e.g., a one-line `Procfile`, a minimal
    `Dockerfile`) to enable non-mcp-app deploy paths; these are
    additive and ignored by mcp-app providers that don't need them.
-2. **CLI simplicity is the invariant.** New features extend through
+2. **Deploy-agnostic is not deploy-ignorant.** A deploy-agnostic
+   solution still documents its runtime contract — the env vars it
+   reads, the start command, the HTTP endpoints (MCP, `/health`,
+   `/admin/*`), and any persistent-storage requirements. This
+   documentation lives in the solution's README. Providers,
+   operators, and CI tools consume it; without it, no downstream
+   tool knows how to host the app. The principle is "solution makes
+   no platform commitment," not "solution ignores deployment
+   concerns."
+3. **CLI simplicity is the invariant.** New features extend through
    defaults/inference, never by requiring new mandatory CLI
    arguments for the simple case.
-3. **Manual is the universal default.** Every mcp-app can be
+4. **Manual is the universal default.** Every mcp-app can be
    managed without installing any provider.
-4. **Url and signing-key are first-class universals.** Every
+5. **Url and signing-key are first-class universals.** Every
    solution has both; every provider declares how it supports them
    via capabilities. Admin ops call universal verbs; provider
    specifics are opaque to operators.
-5. **One substrate.** Fleet is the only state layer. No parallel
+6. **One substrate.** Fleet is the only state layer. No parallel
    setup.json, deploy.yaml, or per-solution state files.
-6. **Invisible until needed.** Solo operators never see fleet
+7. **Invisible until needed.** Solo operators never see fleet
    concepts. Vocabulary surfaces only when the operator reaches
    for the capability.
-7. **No silent cwd influence on deploys.** cwd is a CLI ergonomic
+8. **No silent cwd influence on deploys.** cwd is a CLI ergonomic
    shortcut for target identification; it never changes what
    gets deployed.
-8. **Source locked, ref overridable.** Every deploy maps to a real
+9. **Source locked, ref overridable.** Every deploy maps to a real
    commit. No working-tree escape hatch.
-9. **Providers own runtime state.** mcp-app orchestrates; providers
-   know where things are deployed.
-10. **Secret storage is opaque.** Operator-facing output never
+10. **Providers own runtime state.** mcp-app orchestrates; providers
+    know where things are deployed.
+11. **Secret storage is opaque.** Operator-facing output never
     reveals backend names, paths, or coordinates. Default secure,
     explicit fallback only when the default is unavailable.
-11. **CLI is the only writer of config files.** Agents and skills
+12. **CLI is the only writer of config files.** Agents and skills
     call CLI verbs, not yaml directly.
-12. **Self-describing providers.** Schema and capabilities come
+13. **Self-describing providers.** Schema and capabilities come
     from the provider. mcp-app and skills stay open/closed.
-13. **Operator can always leave a note.** `notes:` on any `deploy:`
+14. **Operator can always leave a note.** `notes:` on any `deploy:`
     block documents context for future humans and agents.
 
 ## Relationship to non-mcp-app deploy paths

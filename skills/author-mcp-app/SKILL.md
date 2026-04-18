@@ -1437,6 +1437,12 @@ An mcp-app HTTP solution can deploy through multiple tools in
 parallel. Documentation lists the paths the solution supports
 as peers, without elevating one over the others.
 
+**The runtime contract is non-negotiable.** Deploy-agnostic doesn't
+mean deploy-silent. Every HTTP-capable solution must document what
+it needs from any environment, regardless of which deploy paths it
+supports. A solution that omits its runtime contract isn't usable
+by any deploy tool — provider, operator, CI, or human.
+
 Start with the runtime contract, scoped to this app — what it
 needs from any environment. This applies to every deploy path:
 
