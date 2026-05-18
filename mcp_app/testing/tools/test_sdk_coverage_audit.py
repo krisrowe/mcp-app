@@ -24,7 +24,7 @@ def test_every_tool_has_sdk_test_coverage(app):
         import pytest
         pytest.skip("SDK tests path not found — cannot audit coverage")
 
-    missing = audit_tool_coverage(app.tools_module, sdk_tests_path)
+    missing = audit_tool_coverage(app._discovered_modules, sdk_tests_path)
     assert not missing, (
         f"Tools with SDK methods lacking test coverage:\n"
         + "\n".join(f"  {tool}: {methods}" for tool, methods in missing.items())

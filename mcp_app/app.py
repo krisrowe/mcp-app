@@ -86,11 +86,22 @@ def _resolve_class(value: str, aliases: dict):
     return getattr(importlib.import_module(module_path), class_name)
 
 
-def _discover_tools(module: ModuleType) -> list:
-    return [
-        obj for name, obj in inspect.getmembers(module, inspect.isfunction)
-        if inspect.iscoroutinefunction(obj) and not name.startswith("_")
-    ]
+def _discover_tools(modules: list[ModuleType]) -> list:
+    """Discover public async functions across one or more modules.
+
+    Deduplicates by function identity, so a function re-exported from a
+    package ``__init__`` and also reachable via a submodule passed
+    separately won't register twice.
+    """
+    seen = set()
+    out = []
+    for module in modules:
+        for name, obj in inspect.getmembers(module, inspect.isfunction):
+            if inspect.iscoroutinefunction(obj) and not name.startswith("_"):
+                if obj not in seen:
+                    seen.add(obj)
+                    out.append(obj)
+    return out
 
 
 def _require_identity(func):
@@ -118,6 +129,17 @@ class App:
     Args:
         name: App name (server name, store paths, CLI prefixes).
         tools_module: Python module containing async tool functions.
+            For larger solutions whose tool inventory is split across
+            multiple submodules by domain, use ``tools_modules``
+            instead. Exactly one of ``tools_module`` /
+            ``tools_modules`` must be set.
+        tools_modules: List of Python modules each containing async
+            tool functions. Use when domain separation aids
+            readability (e.g., a package layout with one module per
+            Google API). The framework discovers public async
+            functions across all listed modules and deduplicates by
+            function identity, so the same function reachable via
+            multiple imports registers once.
         sdk_package: The SDK package (for test tooling to find SDK
             tests). Optional — not needed for runtime.
         store_backend: Store alias or module path. Default: "filesystem".
@@ -131,7 +153,8 @@ class App:
     """
 
     name: str
-    tools_module: ModuleType
+    tools_module: ModuleType | None = None
+    tools_modules: list[ModuleType] | None = None
     sdk_package: ModuleType | None = None
     store_backend: str = "filesystem"
     middleware: list[str] | None = None
@@ -142,9 +165,25 @@ class App:
     def __post_init__(self):
         self._asgi = None
         self._mcp = None
+        if self.tools_module is None and self.tools_modules is None:
+            raise ValueError(
+                "App requires either tools_module=<module> or "
+                "tools_modules=[<module>, ...]."
+            )
+        if self.tools_module is not None and self.tools_modules is not None:
+            raise ValueError(
+                "Pass exactly one of tools_module or tools_modules, not both."
+            )
         if self.profile_model is not None:
             from mcp_app.context import register_profile
             register_profile(self.profile_model, expand=self.profile_expand)
+
+    @property
+    def _discovered_modules(self) -> list[ModuleType]:
+        """List of modules to discover tools from (always 1+ items)."""
+        if self.tools_modules is not None:
+            return self.tools_modules
+        return [self.tools_module]
 
     @cached_property
     def mcp_cli(self) -> click.Group:
@@ -184,7 +223,7 @@ class App:
             streamable_http_path="/",
         )
         self._mcp.settings.transport_security.enable_dns_rebinding_protection = False
-        for func in _discover_tools(self.tools_module):
+        for func in _discover_tools(self._discovered_modules):
             self._mcp.tool()(_require_identity(func))
 
         auth_store = DataStoreAuthAdapter(store)
@@ -245,7 +284,7 @@ class App:
         mcp_app._store = store
 
         mcp = FastMCP(self.name)
-        for func in _discover_tools(self.tools_module):
+        for func in _discover_tools(self._discovered_modules):
             mcp.tool()(_require_identity(func))
 
         adapter = DataStoreAuthAdapter(store)

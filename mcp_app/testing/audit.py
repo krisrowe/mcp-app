@@ -10,12 +10,23 @@ from pathlib import Path
 from types import ModuleType
 
 
-def public_tools(tools_module: ModuleType) -> list:
-    """Find all public async functions in a tools module."""
-    return [
-        obj for name, obj in inspect.getmembers(tools_module, inspect.isfunction)
-        if inspect.iscoroutinefunction(obj) and not name.startswith("_")
-    ]
+def public_tools(tools_module: ModuleType | list[ModuleType]) -> list:
+    """Find all public async functions in a tools module (or list of modules).
+
+    Accepts either a single module (the common case) or a list of
+    modules (for apps using ``App(tools_modules=[...])``). Deduplicates
+    by function identity.
+    """
+    modules = tools_module if isinstance(tools_module, list) else [tools_module]
+    seen = set()
+    out = []
+    for mod in modules:
+        for name, obj in inspect.getmembers(mod, inspect.isfunction):
+            if inspect.iscoroutinefunction(obj) and not name.startswith("_"):
+                if obj not in seen:
+                    seen.add(obj)
+                    out.append(obj)
+    return out
 
 
 def sdk_methods_called_by_tool(tool_func) -> set[str]:
@@ -32,14 +43,18 @@ def sdk_methods_called_by_tool(tool_func) -> set[str]:
     return methods
 
 
-def audit_tool_coverage(tools_module: ModuleType, sdk_tests_path: Path) -> dict[str, list[str]]:
+def audit_tool_coverage(
+    tools_module: ModuleType | list[ModuleType],
+    sdk_tests_path: Path,
+) -> dict[str, list[str]]:
     """Check that every SDK method called by a tool has test coverage.
 
     Returns a dict of {tool_name: [untested_sdk_methods]}. Empty dict
     means full coverage.
 
     Args:
-        tools_module: The app's tools module.
+        tools_module: The app's tools module, or list of modules for
+            apps using ``App(tools_modules=[...])``.
         sdk_tests_path: Path to the SDK test directory (e.g., tests/unit/sdk/).
     """
     if not sdk_tests_path.exists():

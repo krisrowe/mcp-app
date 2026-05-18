@@ -48,20 +48,25 @@ def test_admin_cli_has_tools_group(app):
     )
 
 
+def _tool_modules(app):
+    """Return the list of tool modules the app exposes, regardless of
+    whether the app uses ``tools_module=<m>`` or ``tools_modules=[...]``."""
+    return app._discovered_modules
+
+
 def test_tools_module_has_public_async_functions(app):
-    tools = public_tools(app.tools_module)
-    assert len(tools) > 0, (
-        f"No public async functions found in {app.tools_module.__name__}"
-    )
+    tools = public_tools(_tool_modules(app))
+    names = ", ".join(m.__name__ for m in _tool_modules(app))
+    assert len(tools) > 0, f"No public async functions found in {names}"
 
 
 def test_every_tool_has_docstring(app):
-    for tool in public_tools(app.tools_module):
+    for tool in public_tools(_tool_modules(app)):
         assert tool.__doc__, f"tool {tool.__name__} missing docstring"
 
 
 def test_every_tool_has_return_type(app):
-    for tool in public_tools(app.tools_module):
+    for tool in public_tools(_tool_modules(app)):
         sig = inspect.signature(tool)
         assert sig.return_annotation != inspect.Signature.empty, (
             f"tool {tool.__name__} missing return type annotation"
